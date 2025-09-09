@@ -1,0 +1,30 @@
+# Build artifacts
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Binaries / libraries
+storage_demo
+*.o
+*.a
+*.so
+*.dll
+*.exe
+
+# Logs and miscellaneous
+*.log
+*.tmp
+
+# Compilation database
+compile_commands.json
+
+# Runtime data (generated at runtime)
+storage_data/
+
+# IDE / editor settings
+.idea/
+.vscode/
+*.swp
+.DS_Store
