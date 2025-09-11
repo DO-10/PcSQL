@@ -11,8 +11,9 @@ namespace pcsql {
 
 static bool file_exists(const std::filesystem::path& p) {
     struct stat st{};
-    return ::stat(p.c_str(), &st) == 0;
-}
+    // return ::stat(p.c_str(), &st) == 0;
+    return ::stat(p.string().c_str(), &st) == 0;
+    }
 
 DiskManager::DiskManager(const std::string& base_dir,
                          const std::string& db_file,

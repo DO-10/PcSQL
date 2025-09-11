@@ -1,21 +1,26 @@
 cmake_minimum_required(VERSION 3.14)
-project(PcSQL_Storage CXX)
+project(PcSQL CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include_directories(${PROJECT_SOURCE_DIR}/include)
+# 添加此编译选项以解决编码警告 (warning C4819)
+add_compile_options(/utf-8)
 
-file(GLOB_RECURSE STORAGE_SOURCES
+# 递归查找所有源代码文件，包括存储和编译器部分
+file(GLOB_RECURSE ALL_SOURCES
     ${PROJECT_SOURCE_DIR}/src/storage/*.cpp
+${PROJECT_SOURCE_DIR}/src/compiler/*.cpp
+    ${PROJECT_SOURCE_DIR}/src/main.cpp
 )
 
-add_library(pcsql_storage ${STORAGE_SOURCES})
-# headers are included via include_directories
+# 创建一个名为 pcsql_demo 的可执行文件，将所有源文件都编译进来
+add_executable(pcsql_demo ${ALL_SOURCES})
 
-add_executable(storage_demo ${PROJECT_SOURCE_DIR}/src/main.cpp)
+# 添加头文件搜索路径，以便编译器找到你的头文件
+target_include_directories(pcsql_demo PUBLIC
+    ${PROJECT_SOURCE_DIR}/include
+)
 
-# If pthread needed later, link it here
+# 如果你的项目未来需要多线程，请取消注释以下两行
 # find_package(Threads REQUIRED)
-# target_link_libraries(pcsql_storage Threads::Threads)
-
-target_link_libraries(storage_demo pcsql_storage)
+# target_link_libraries(pcsql_demo Threads::Threads)
