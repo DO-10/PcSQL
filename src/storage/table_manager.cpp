@@ -81,9 +81,15 @@ std::int32_t TableManager::create_table(const std::string& name) {
     return tid;
 }
 
-bool TableManager::drop_table_by_id(std::int32_t table_id) {
+bool TableManager::drop_table_by_id(std::int32_t table_id, DiskManager& disk) {
     auto itn = id_to_name_.find(table_id);
     if (itn == id_to_name_.end()) return false;
+    // 回收所有页
+    auto itp = table_pages_.find(table_id);
+    if (itp != table_pages_.end()) {
+        for (auto pid : itp->second) disk.free_page(pid);
+    }
+    // 再删除目录项
     std::string name = itn->second;
     id_to_name_.erase(itn);
     name_to_id_.erase(name);
@@ -92,10 +98,10 @@ bool TableManager::drop_table_by_id(std::int32_t table_id) {
     return true;
 }
 
-bool TableManager::drop_table_by_name(const std::string& name) {
+bool TableManager::drop_table_by_name(const std::string& name, DiskManager& disk) {
     auto it = name_to_id_.find(name);
     if (it == name_to_id_.end()) return false;
-    return drop_table_by_id(it->second);
+    return drop_table_by_id(it->second, disk);
 }
 
 std::int32_t TableManager::get_table_id(const std::string& name) const {

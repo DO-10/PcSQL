@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 project(PcSQL_Storage CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include_directories(${PROJECT_SOURCE_DIR}/include)
 
@@ -14,8 +15,15 @@ add_library(pcsql_storage ${STORAGE_SOURCES})
 
 add_executable(storage_demo ${PROJECT_SOURCE_DIR}/src/main.cpp)
 
+add_executable(storage_basic_tests ${PROJECT_SOURCE_DIR}/src/tests/basic_tests.cpp)
+add_executable(storage_stress_tests ${PROJECT_SOURCE_DIR}/src/tests/stress_tests.cpp)
+add_executable(bptree_tests ${PROJECT_SOURCE_DIR}/src/tests/bptree_tests.cpp)
+
 # If pthread needed later, link it here
 # find_package(Threads REQUIRED)
 # target_link_libraries(pcsql_storage Threads::Threads)
 
 target_link_libraries(storage_demo pcsql_storage)
+target_link_libraries(storage_basic_tests pcsql_storage)
+target_link_libraries(storage_stress_tests pcsql_storage)
+target_link_libraries(bptree_tests pcsql_storage)
