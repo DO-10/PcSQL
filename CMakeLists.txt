@@ -1,29 +1,48 @@
 cmake_minimum_required(VERSION 3.14)
-project(PcSQL_Storage CXX)
+project(PcSQL CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-include_directories(${PROJECT_SOURCE_DIR}/include)
+# Use UTF-8 on MSVC only
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
 
+# Collect sources
 file(GLOB_RECURSE STORAGE_SOURCES
-    ${PROJECT_SOURCE_DIR}/src/storage/*.cpp
+  ${PROJECT_SOURCE_DIR}/src/storage/*.cpp
+)
+file(GLOB_RECURSE COMPILER_SOURCES
+  ${PROJECT_SOURCE_DIR}/src/compiler/*.cpp
 )
 
-add_library(pcsql_storage ${STORAGE_SOURCES})
-# headers are included via include_directories
+# Core library
+add_library(pcsql_storage STATIC
+  ${STORAGE_SOURCES}
+  ${COMPILER_SOURCES}
+)
 
+target_include_directories(pcsql_storage PUBLIC
+  ${PROJECT_SOURCE_DIR}/include
+)
+
+# Demo executable
 add_executable(storage_demo ${PROJECT_SOURCE_DIR}/src/main.cpp)
+target_link_libraries(storage_demo pcsql_storage)
 
+# Test executables
 add_executable(storage_basic_tests ${PROJECT_SOURCE_DIR}/src/tests/basic_tests.cpp)
 add_executable(storage_stress_tests ${PROJECT_SOURCE_DIR}/src/tests/stress_tests.cpp)
 add_executable(bptree_tests ${PROJECT_SOURCE_DIR}/src/tests/bptree_tests.cpp)
 
-# If pthread needed later, link it here
-# find_package(Threads REQUIRED)
-# target_link_libraries(pcsql_storage Threads::Threads)
-
-target_link_libraries(storage_demo pcsql_storage)
 target_link_libraries(storage_basic_tests pcsql_storage)
 target_link_libraries(storage_stress_tests pcsql_storage)
 target_link_libraries(bptree_tests pcsql_storage)
+
+# CTest integration
+include(CTest)
+enable_testing()
+add_test(NAME storage_basic_tests COMMAND storage_basic_tests)
+add_test(NAME storage_stress_tests COMMAND storage_stress_tests)
+add_test(NAME bptree_tests COMMAND bptree_tests)

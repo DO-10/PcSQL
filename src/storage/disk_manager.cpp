@@ -12,8 +12,9 @@ namespace pcsql {                                                //定义命名�
 
 static bool file_exists(const std::filesystem::path& p) {        //检查p路径文件是否存在，存在返回0
     struct stat st{};
-    return ::stat(p.c_str(), &st) == 0;
-}
+    // return ::stat(p.c_str(), &st) == 0;
+    return ::stat(p.string().c_str(), &st) == 0;
+    }
 
 /*
 base_dir_: 存储目录，转为绝对路径。
