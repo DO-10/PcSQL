@@ -2,9 +2,91 @@
 #include <stdexcept>
 #include <iostream>
 #include <sstream>
-#include "compiler/catalog.h"
-#include "compiler/semantic_analyzer.h"
-#include "compiler/ir_generator.h"
+// removed: #include "compiler/catalog.h"
+// removed: #include "compiler/semantic_analyzer.h"
+// removed: #include "compiler/ir_generator.h"
+
+// ===== AST 调试打印辅助函数 =====
+namespace {
+    std::string indent(int level) { return std::string(level * 2, ' '); }
+
+    void printASTNode(const ASTNode* node, int level = 0) {
+        if (!node) {
+            std::cout << indent(level) << "<null ASTNode>" << std::endl;
+            return;
+        }
+        if (auto sel = dynamic_cast<const SelectStatement*>(node)) {
+            std::cout << indent(level) << "SelectStatement" << std::endl;
+            std::cout << indent(level+1) << "columns: ";
+            for (size_t i = 0; i < sel->columns.size(); ++i) {
+                std::cout << sel->columns[i] << (i + 1 < sel->columns.size() ? ", " : "");
+            }
+            std::cout << std::endl;
+            std::cout << indent(level+1) << "from: " << sel->fromTable << std::endl;
+            if (sel->whereClause) {
+                std::cout << indent(level+1) << "where:" << std::endl;
+                printASTNode(sel->whereClause.get(), level + 2);
+            }
+            return;
+        }
+        if (auto ct = dynamic_cast<const CreateTableStatement*>(node)) {
+            std::cout << indent(level) << "CreateTableStatement" << std::endl;
+            std::cout << indent(level+1) << "table: " << ct->tableName << std::endl;
+            std::cout << indent(level+1) << "columns:" << std::endl;
+            for (const auto& col : ct->columns) {
+                std::cout << indent(level+2) << col.name << " : " << col.type;
+                if (!col.constraints.empty()) {
+                    std::cout << " [";
+                    for (size_t i = 0; i < col.constraints.size(); ++i) {
+                        std::cout << col.constraints[i] << (i + 1 < col.constraints.size() ? ", " : "");
+                    }
+                    std::cout << "]";
+                }
+                std::cout << std::endl;
+            }
+            return;
+        }
+        if (auto ins = dynamic_cast<const InsertStatement*>(node)) {
+            std::cout << indent(level) << "InsertStatement" << std::endl;
+            std::cout << indent(level+1) << "table: " << ins->tableName << std::endl;
+            std::cout << indent(level+1) << "values: ";
+            for (size_t i = 0; i < ins->values.size(); ++i) {
+                std::cout << ins->values[i] << (i + 1 < ins->values.size() ? ", " : "");
+            }
+            std::cout << std::endl;
+            return;
+        }
+        if (auto del = dynamic_cast<const DeleteStatement*>(node)) {
+            std::cout << indent(level) << "DeleteStatement" << std::endl;
+            std::cout << indent(level+1) << "table: " << del->tableName << std::endl;
+            if (del->whereClause) {
+                std::cout << indent(level+1) << "where:" << std::endl;
+                printASTNode(del->whereClause.get(), level + 2);
+            }
+            return;
+        }
+        if (auto upd = dynamic_cast<const UpdateStatement*>(node)) {
+            std::cout << indent(level) << "UpdateStatement" << std::endl;
+            std::cout << indent(level+1) << "table: " << upd->tableName << std::endl;
+            std::cout << indent(level+1) << "set:" << std::endl;
+            for (const auto& kv : upd->assignments) {
+                std::cout << indent(level+2) << kv.first << " = " << kv.second << std::endl;
+            }
+            if (upd->whereClause) {
+                std::cout << indent(level+1) << "where:" << std::endl;
+                printASTNode(upd->whereClause.get(), level + 2);
+            }
+            return;
+        }
+        if (auto where = dynamic_cast<const WhereClause*>(node)) {
+            std::cout << indent(level) << "WhereClause" << std::endl;
+            std::cout << indent(level+1) << "condition: " << where->condition << std::endl;
+            return;
+        }
+        std::cout << indent(level) << "<Unknown ASTNode type>" << std::endl;
+    }
+}
+// ===== AST 调试打印辅助函数结束 =====
 
 // Parser 类实现
 Parser::Parser(const std::vector<Token>& tokens) : tokens_(tokens), pos_(0) {
@@ -89,26 +171,15 @@ std::unique_ptr<ASTNode> Parser::parse() {
     
     std::cout << "Syntax analysis completed." << std::endl;
 
-    // 语法分析成功后，启动语义分析
-    Catalog catalog;
-    SemanticAnalyzer semanticAnalyzer(catalog);
+    // 打印 AST（语法分析的输出）
     try {
-        semanticAnalyzer.analyze(ast, tokens_);
-    } catch (const std::runtime_error& e) {
-        throw e;
+        std::cout << "\nAST dump (from parser):" << std::endl;
+        printASTNode(ast.get(), 0);
+    } catch (...) {
+        // 打印不应影响主流程
     }
-    
-    // 语义分析成功后，启动 IR 生成
-    IRGenerator irGenerator;
-    std::vector<Quadruplet> quadruplets = irGenerator.generate(ast);
-    
-    // 打印四元式
-    std::cout << "\nStarting IR generation (Quadruplets)..." << std::endl;
-    for (const auto& quad : quadruplets) {
-        std::cout << "(" << quad.op << ", " << quad.arg1 << ", " << quad.arg2 << ", " << quad.result << ")" << std::endl;
-    }
-    std::cout << "IR generation completed." << std::endl;
-    
+
+    // 仅返回 AST，后续的语义分析与 IR 生成由 Compiler 负责
     return ast;
 }
 
@@ -162,7 +233,7 @@ std::unique_ptr<ASTNode> Parser::parseInsertStatement() {
     node->values = parseValueList();
     eat(")");
     eat(";");
-    
+
     return node;
 }
 
@@ -170,7 +241,7 @@ std::unique_ptr<ASTNode> Parser::parseInsertStatement() {
 std::unique_ptr<ASTNode> Parser::parseDeleteStatement() {
     std::cout << "Parsing DELETE statement..." << std::endl;
     auto node = std::make_unique<DeleteStatement>();
-    
+
     eat("DELETE");
     eat("FROM");
     node->tableTokenIndex = pos_;
@@ -178,7 +249,7 @@ std::unique_ptr<ASTNode> Parser::parseDeleteStatement() {
     eat(TokenType::IDENTIFIER);
     node->whereClause = parseOptionalWhere();
     eat(";");
-    
+
     return node;
 }
 
@@ -195,62 +266,54 @@ std::unique_ptr<ASTNode> Parser::parseUpdateStatement() {
     node->assignments = parseSetClause();
     node->whereClause = parseOptionalWhere();
     eat(";");
-    
+
     return node;
 }
 
-// 子句解析函数
+// 解析 SELECT 列表
 std::vector<std::string> Parser::parseSelectList() {
-    std::vector<std::string> columns;
-    columns.push_back(currentToken().value);
-    eat(TokenType::IDENTIFIER);
-
-    while (currentToken().value == ",") {
-        advance();
-        columns.push_back(currentToken().value);
+    std::vector<std::string> cols;
+    while (true) {
+        cols.emplace_back(currentToken().value);
         eat(TokenType::IDENTIFIER);
+        if (currentToken().value == ",") {
+            eat(",");
+        } else {
+            break;
+        }
     }
-    
-    return columns;
+    return cols;
 }
 
 std::unique_ptr<WhereClause> Parser::parseOptionalWhere() {
     if (currentToken().value == "WHERE") {
-        auto node = std::make_unique<WhereClause>();
-        advance();
-        size_t conditionTokenIndex;
-        node->condition = parseCondition(conditionTokenIndex);
-        node->tokenIndex = conditionTokenIndex;
-        return node;
+        eat("WHERE");
+        auto where = std::make_unique<WhereClause>();
+        where->tokenIndex = pos_;
+        where->condition = parseCondition(where->tokenIndex);
+        return where;
     }
     return nullptr;
 }
 
 std::string Parser::parseCondition(size_t& tokenIndex) {
-    std::stringstream ss;
-    
-    tokenIndex = pos_;
-    ss << currentToken().value;
-    eat(TokenType::IDENTIFIER);
-    
-    ss << " " << currentToken().value;
-    eat(TokenType::OPERATOR);
-    
-    ss << " " << currentToken().value;
-    eat(currentToken().type);
-    
-    return ss.str();
+    // 简化：WHERE 条件到下一个分号前的所有内容
+    std::ostringstream cond;
+    while (currentToken().value != ";") {
+        cond << currentToken().value << " ";
+        tokenIndex = pos_;
+        advance();
+    }
+    return cond.str();
 }
 
 std::vector<ColumnDefinition> Parser::parseColumnDefinitionList() {
     std::vector<ColumnDefinition> columns;
     columns.push_back(parseColumnDefinition());
-
     while (currentToken().value == ",") {
-        advance();
+        eat(",");
         columns.push_back(parseColumnDefinition());
     }
-    
     return columns;
 }
 
@@ -264,71 +327,48 @@ ColumnDefinition Parser::parseColumnDefinition() {
 }
 
 std::string Parser::parseDataType() {
-    std::string dataType = currentToken().value;
+    // 简化：类型是一个标识符
+    std::string type = currentToken().value;
     eat(TokenType::IDENTIFIER);
-    return dataType;
+    return type;
 }
 
 std::vector<std::string> Parser::parseColumnConstraints() {
+    // 简化：可选的约束列表（如 PRIMARY, KEY, NOT, NULL 等）直到遇到 "," 或 ")" 结束
     std::vector<std::string> constraints;
-    while (currentToken().value == "PRIMARY" || currentToken().value == "UNIQUE" || currentToken().value == "NOT") {
-        if (currentToken().value == "PRIMARY") {
-            std::stringstream ss;
-            ss << currentToken().value;
-            eat("PRIMARY");
-            ss << " " << currentToken().value;
-            eat("KEY");
-            constraints.push_back(ss.str());
-        } else if (currentToken().value == "UNIQUE") {
-            constraints.push_back(currentToken().value);
-            eat("UNIQUE");
-        } else if (currentToken().value == "NOT") {
-            std::stringstream ss;
-            ss << currentToken().value;
-            eat("NOT");
-            ss << " " << currentToken().value;
-            eat("NULL");
-            constraints.push_back(ss.str());
-        } else {
-            break;
-        }
+    while (currentToken().value != "," && currentToken().value != ")") {
+        constraints.push_back(currentToken().value);
+        advance();
     }
     return constraints;
 }
 
 std::vector<std::string> Parser::parseValueList() {
     std::vector<std::string> values;
-    values.push_back(currentToken().value);
-    eat(currentToken().type);
-
-    while (currentToken().value == ",") {
-        advance();
+    while (currentToken().value != ")") {
         values.push_back(currentToken().value);
-        eat(currentToken().type);
+        advance();
+        if (currentToken().value == ",") {
+            eat(",");
+        }
     }
-    
     return values;
 }
 
 std::map<std::string, std::string> Parser::parseSetClause() {
     std::map<std::string, std::string> assignments;
-    std::string column = currentToken().value;
-    eat(TokenType::IDENTIFIER);
-    eat("=");
-    std::string value = currentToken().value;
-    eat(currentToken().type);
-
-    assignments[column] = value;
-
-    while (currentToken().value == ",") {
-        advance();
-        column = currentToken().value;
+    while (true) {
+        std::string column = currentToken().value;
         eat(TokenType::IDENTIFIER);
         eat("=");
-        value = currentToken().value;
-        eat(currentToken().type);
+        std::string value = currentToken().value;
+        advance();
         assignments[column] = value;
+        if (currentToken().value == ",") {
+            eat(",");
+        } else {
+            break;
+        }
     }
-
     return assignments;
 }

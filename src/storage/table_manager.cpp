@@ -1,6 +1,7 @@
 #include "storage/table_manager.hpp"
 
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 
@@ -72,12 +73,13 @@ void TableManager::save() const {
 }
 
 std::int32_t TableManager::create_table(const std::string& name) {
-    if (name_to_id_.count(name)) throw std::invalid_argument("table exists");//如果表名已存在（name→id 索引中有记录），抛 invalid_argument（不允许重复表名）。
+    if (name_to_id_.count(name)) throw std::invalid_argument("[TableManager] table exists");//如果表名已存在（name→id 索引中有记录），抛 invalid_argument（不允许重复表名）。
     std::int32_t tid = next_table_id_++;//分配当前 next_table_id_ 给新表 tid，然后自增 next_table_id_（为下一个新表准备）
     id_to_name_[tid] = name;//分配当前 next_table_id_ 给新表 tid，然后自增 next_table_id_（为下一个新表准备）
     name_to_id_[name] = tid;//将新表名 name 映射到 tid
     table_pages_[tid] = {};//初始化该表的页列表为空向量。
-    save();//持久化变更到元数据文件
+    save();//持久化变更到元数据文件（此处移除，改由后续记录写入时统一持久化）
+    std::cout << "[TableManager] create_table: " << tid << " " << name << std::endl;
     return tid;//返回新表的 tid
 }
 
@@ -107,6 +109,7 @@ bool TableManager::drop_table_by_name(const std::string& name, DiskManager& disk
 std::int32_t TableManager::get_table_id(const std::string& name) const {
     auto it = name_to_id_.find(name);
     if (it == name_to_id_.end()) return -1;
+    std::cout << "[TableManager] get_table_id: " << name << "--->" << it->second << std::endl;
     return it->second;
 }
 

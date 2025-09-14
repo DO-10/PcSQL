@@ -10,17 +10,26 @@ if(MSVC)
 endif()
 
 # Collect sources
-file(GLOB_RECURSE STORAGE_SOURCES
+file(GLOB_RECURSE STORAGE_SOURCES CONFIGURE_DEPENDS
   ${PROJECT_SOURCE_DIR}/src/storage/*.cpp
 )
-file(GLOB_RECURSE COMPILER_SOURCES
+file(GLOB_RECURSE COMPILER_SOURCES CONFIGURE_DEPENDS
   ${PROJECT_SOURCE_DIR}/src/compiler/*.cpp
+)
+file(GLOB_RECURSE EXECUTION_SOURCES CONFIGURE_DEPENDS
+  ${PROJECT_SOURCE_DIR}/src/execution/*.cpp
+)
+# System catalog sources
+file(GLOB_RECURSE SYSTEM_CATALOG_SOURCES CONFIGURE_DEPENDS
+  ${PROJECT_SOURCE_DIR}/src/system_catalog/*.cpp
 )
 
 # Core library
 add_library(pcsql_storage STATIC
   ${STORAGE_SOURCES}
   ${COMPILER_SOURCES}
+  ${EXECUTION_SOURCES}
+  ${SYSTEM_CATALOG_SOURCES}
 )
 
 target_include_directories(pcsql_storage PUBLIC

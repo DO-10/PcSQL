@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
@@ -124,6 +125,7 @@ std::uint32_t DiskManager::allocate_page() {
     std::array<char, PAGE_SIZE> zeros{}; // value-initialized to 0
     write_page(page_id, zeros.data(), PAGE_SIZE);
     save_meta();
+    std::cout << "allocate_page: " << page_id << std::endl;
     return page_id;
 
     /*分配新页：
