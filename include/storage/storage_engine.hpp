@@ -174,6 +174,7 @@ private:
             case DataType::VARCHAR: return "VARCHAR";
             case DataType::DOUBLE: return "DOUBLE";
             case DataType::BOOLEAN: return "BOOLEAN";
+            case DataType::TIMESTAMP: return "TIMESTAMP";
             default: return "UNKNOWN";
         }
     }

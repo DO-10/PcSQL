@@ -4,8 +4,17 @@
 #include <cctype>
 #include <utility>
 #include <limits>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
 
 using namespace pcsql;
+
+// Forward declarations for helper functions used in handleInsert
+static bool has_auto_increment(const std::vector<std::string>& cons);
+static bool has_default_current_timestamp(const std::vector<std::string>& cons);
+static inline bool is_null_or_default_literal(const std::string& v);
+static std::string now_timestamp_string();
 
 static std::string join(const std::vector<std::string>& v, const char* sep = ", ") {
     std::ostringstream os; for (size_t i=0;i<v.size();++i){ if(i) os<<sep; os<<v[i]; } return os.str();
@@ -170,7 +179,60 @@ std::string ExecutionEngine::handleInsert(InsertStatement* stmt) {
     int tid = storage_.get_table_id(to_lower(stmt->tableName));
     if (tid < 0) return "Table not found: " + stmt->tableName;
 
-    std::string row = join(stmt->values, "|");
+    // Load schema to interpret constraints and types
+    const auto& schema = storage_.get_table_schema(to_lower(stmt->tableName));
+
+    // Start with provided values (already validated by semantic analyzer for count/type basics)
+    std::vector<std::string> vals = stmt->values;
+    vals.resize(schema.columns.size());
+
+    // Preload existing rows for AUTO_INCREMENT max scanning (only if needed)
+    bool any_auto_inc = false;
+    for (const auto& col : schema.columns) if (has_auto_increment(col.constraints)) { any_auto_inc = true; break; }
+    std::vector<std::pair<RID, std::string>> rows;
+    if (any_auto_inc) {
+        rows = storage_.scan_table(tid);
+    }
+
+    for (size_t i = 0; i < schema.columns.size(); ++i) {
+        const auto& col = schema.columns[i];
+        std::string& v = vals[i];
+        // Handle DEFAULT CURRENT_TIMESTAMP
+        if (has_default_current_timestamp(col.constraints)) {
+            // When user writes DEFAULT or NULL, fill with current timestamp
+            if (is_null_or_default_literal(v) || to_lower(v) == "current_timestamp") {
+                v = now_timestamp_string();
+            }
+        } else if (to_lower(v) == "current_timestamp") {
+            // If user explicitly provided CURRENT_TIMESTAMP for a TIMESTAMP column, evaluate it as literal now
+            if (col.type == DataType::TIMESTAMP) {
+                v = now_timestamp_string();
+            }
+        }
+        // Handle AUTO_INCREMENT for integer columns
+        if (has_auto_increment(col.constraints)) {
+            bool need_generate = is_null_or_default_literal(v) || v.empty();
+            if (need_generate) {
+                long long max_val = 0;
+                bool found = false;
+                for (const auto& kv : rows) {
+                    auto fields = split(kv.second, '|');
+                    if (i < fields.size()) {
+                        try {
+                            long long cur = std::stoll(fields[i]);
+                            if (!found || cur > max_val) { max_val = cur; found = true; }
+                        } catch (...) {
+                            // ignore non-numeric
+                        }
+                    }
+                }
+                long long next = found ? (max_val + 1) : 1;
+                v = std::to_string(next);
+            }
+        }
+    }
+
+    std::string row = join(vals, "|");
     auto rid = storage_.insert_record(tid, row);
     std::ostringstream os; os << "INSERT OK rid=(" << rid.page_id << "," << rid.slot_id << ")";
     return os.str();
@@ -342,4 +404,47 @@ std::string ExecutionEngine::handleUpdate(UpdateStatement* stmt) {
     }
 
     std::ostringstream os; os << "UPDATE OK count=" << n; return os.str();
+}
+
+// Helpers for INSERT default value handling
+// Removed duplicate to_lower definition (a to_lower helper already exists near the top of this file)
+
+// Removed duplicate to_lower definition (a to_lower helper already exists near the top of this file)
+
+static bool constraint_set_contains(const std::vector<std::string>& cons, const std::string& token_lower) {
+    for (auto c : cons) {
+        auto lc = to_lower(c);
+        if (lc == token_lower) return true;
+    }
+    return false;
+}
+
+static bool has_auto_increment(const std::vector<std::string>& cons) {
+    return constraint_set_contains(cons, "auto_increment");
+}
+
+static bool has_default_current_timestamp(const std::vector<std::string>& cons) {
+    // DEFAULT CURRENT_TIMESTAMP represented as tokens ["DEFAULT", "CURRENT_TIMESTAMP"]
+    return constraint_set_contains(cons, "default") && constraint_set_contains(cons, "current_timestamp");
+}
+
+static inline bool is_null_or_default_literal(const std::string& v) {
+    auto s = to_lower(v);
+    return (s == "null" || s == "default");
+}
+
+static std::string now_timestamp_string() {
+    using namespace std::chrono;
+    auto now = system_clock::now();
+    std::time_t t = system_clock::to_time_t(now);
+    std::tm tm{};
+    // thread-safe localtime
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    std::ostringstream os;
+    os << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return os.str();
 }

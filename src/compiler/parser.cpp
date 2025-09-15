@@ -267,41 +267,65 @@ std::unique_ptr<ASTNode> Parser::parseCreateTableStatement() {
     eat("CREATE");
     eat("TABLE");
 
+    // 记录表名 token 位置，便于后续错误定位
+    size_t tableTokIdx = pos_;
     std::string tableName = currentToken().value;
     eat(TokenType::IDENTIFIER);
 
     eat("("); // 吃掉左括号
 
+    // 支持列定义与表级约束（PRIMARY KEY/UNIQUE (col)）混合出现
     std::vector<ColumnDefinition> columns;
+    auto applyConstraintToColumn = [&](const std::string& targetCol, const std::vector<std::string>& consTokens) {
+        // 查找列
+        int idx = -1;
+        for (size_t i = 0; i < columns.size(); ++i) {
+            if (columns[i].name == targetCol) { idx = static_cast<int>(i); break; }
+        }
+        if (idx < 0) {
+            reportError("Referenced column '" + targetCol + "' in table-level constraint not found", pos_);
+        }
+        // 直接把约束 token 追加到该列
+        columns[idx].constraints.insert(columns[idx].constraints.end(), consTokens.begin(), consTokens.end());
+    };
+
     while (currentToken().value != ")") {
-        std::string name = currentToken().value;
-        eat(TokenType::IDENTIFIER);
-
-        std::string type = currentToken().value;
-        eat(TokenType::KEYWORD);
-
-       // 【修改】新增：处理 CHAR 或 VARCHAR 后的长度
-size_t length = 0; // 默认长度为0
-// 直接检查类型字符串，不再依赖已移除的 Catalog 类
-if (type == "VARCHAR" || type == "CHAR") {
-    eat("(");
-    if (currentToken().type != TokenType::NUMBER) {
-        reportError("Expected a number for CHAR/VARCHAR length.", pos_);
-    }
-    length = std::stoul(currentToken().value);
-    eat(TokenType::NUMBER);
-    eat(")");
-}
-        std::vector<std::string> constraints;
-        while (currentToken().value != "," && currentToken().value != ")") {
-            // 这里可以处理 PRIMARY KEY, UNIQUE, NOT NULL 等约束
-            // 简化处理：将所有后续的关键字作为约束
-            constraints.push_back(currentToken().value);
-            eat(TokenType::KEYWORD);
+        bool handled_table_level = false;
+        // 仅当匹配到 PRIMARY KEY ( ... ) 模式时，才按表级约束处理
+        if (currentToken().value == "PRIMARY") {
+            const Token& t1 = peekNextToken();
+            if (t1.value == "KEY") {
+                // 检查再下一个是否是 "("
+                if (pos_ + 2 < tokens_.size() && tokens_[pos_ + 2].value == "(") {
+                    eat("PRIMARY");
+                    eat("KEY");
+                    eat("(");
+                    std::string colName = currentToken().value;
+                    eat(TokenType::IDENTIFIER);
+                    eat(")");
+                    applyConstraintToColumn(colName, std::vector<std::string>{"PRIMARY", "KEY"});
+                    handled_table_level = true;
+                }
+            }
+        }
+        // 仅当匹配到 UNIQUE ( ... ) 模式时，才按表级约束处理
+        if (!handled_table_level && currentToken().value == "UNIQUE") {
+            // 下一个必须是 "("
+            if (peekNextToken().value == "(") {
+                eat("UNIQUE");
+                eat("(");
+                std::string colName = currentToken().value;
+                eat(TokenType::IDENTIFIER);
+                eat(")");
+                applyConstraintToColumn(colName, std::vector<std::string>{"UNIQUE"});
+                handled_table_level = true;
+            }
         }
 
-        // 【修改】使用新的列表初始化，包含四个参数
-        columns.push_back({name, type, length, constraints});
+        if (!handled_table_level) {
+            // 列定义（包含列级 PRIMARY KEY/UNIQUE/NOT NULL/DEFAULT 等）
+            columns.push_back(parseColumnDefinition());
+        }
 
         if (currentToken().value == ",") {
             eat(",");
@@ -310,7 +334,7 @@ if (type == "VARCHAR" || type == "CHAR") {
 
     eat(")"); // 吃掉右括号
 
-    // 检查 CREATE TABLE 语句末尾的分号
+    // 检查 CREATE TABLE 语句末尾的分号（可选，parse() 也会处理一次）
     if (currentToken().value == ";") {
         eat(";");
     }
@@ -318,6 +342,7 @@ if (type == "VARCHAR" || type == "CHAR") {
     auto createTableNode = std::make_unique<CreateTableStatement>();
     createTableNode->tableName = tableName;
     createTableNode->columns = columns;
+    createTableNode->tableTokenIndex = tableTokIdx;
 
     return createTableNode;
 }
@@ -428,7 +453,12 @@ ColumnDefinition Parser::parseColumnDefinition() {
     eat(TokenType::IDENTIFIER);
     
     std::string colType = currentToken().value;
-    eat(TokenType::KEYWORD); // 消耗类型关键字
+    // 放宽类型 token 的限制：既可以是关键字也可以是标识符（如 TIMESTAMP）
+    if (currentToken().type == TokenType::KEYWORD || currentToken().type == TokenType::IDENTIFIER) {
+        advance();
+    } else {
+        reportError("Expected a type name (keyword or identifier)", pos_);
+    }
     
     size_t colLength = 0;
     // 检查是否为带长度的类型，例如 VARCHAR(10) 或 CHAR(10)
@@ -446,11 +476,11 @@ ColumnDefinition Parser::parseColumnDefinition() {
         eat(")");
     }
     
-    // 解析约束
+    // 解析约束（直到遇到","或")"），支持 KEYWORD/IDENTIFIER/NUMBER/STRING 等 token
     std::vector<std::string> constraints = parseColumnConstraints();
     
     // 创建并返回 ColumnDefinition 结构体
-return ColumnDefinition(colName, colType, colLength, constraints);
+    return ColumnDefinition(colName, colType, colLength, constraints);
 }
 
 // 解析数据类型 (已在 parseColumnDefinition 中处理，此函数不再需要)
@@ -462,13 +492,21 @@ std::string Parser::parseDataType() {
 }
 
 
-// 解析列约束（PRIMARY KEY, UNIQUE, NOT NULL）
+// 解析列约束（PRIMARY KEY, UNIQUE, NOT NULL, DEFAULT, AUTO_INCREMENT 等原样收集）
 std::vector<std::string> Parser::parseColumnConstraints() {
-    // 简化：可选的约束列表（如 PRIMARY, KEY, NOT, NULL 等）直到遇到 "," 或 ")" 结束
     std::vector<std::string> constraints;
     while (currentToken().value != "," && currentToken().value != ")") {
-        constraints.push_back(currentToken().value);
-        advance();
+        // 接受关键字、标识符、数字、字符串以及部分运算符（例如 CURRENT_TIMESTAMP 可能被识别为 IDENTIFIER）
+        if (currentToken().type == TokenType::KEYWORD ||
+            currentToken().type == TokenType::IDENTIFIER ||
+            currentToken().type == TokenType::NUMBER ||
+            currentToken().type == TokenType::STRING) {
+            constraints.push_back(currentToken().value);
+            advance();
+        } else {
+            // 遇到无法识别为约束的 token，报错以提示
+            reportError("Unexpected token in column constraints: '" + currentToken().value + "'", pos_);
+        }
     }
     return constraints;
 }

@@ -108,3 +108,15 @@ Stats - hit:1 miss:1 evict:0 flush:1
 - 记录管理器（RecordManager）：槽式页、增删改查、顺序扫描
 - drop_table 释放并回收其所属页到空闲列表
 - 基础单测与压力测试
+
+## 创建表
+ CREATE TABLE
+ - NOT NULL
+ - UNIQUE
+ - PRIMARY KEY
+ - FOREIGN KEY
+ - 
+
+ ## 删除表
+ DROP TABLE
+ 

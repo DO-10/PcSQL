@@ -12,6 +12,7 @@ enum class DataType {
     VARCHAR,
     DOUBLE,
     BOOLEAN,
+    TIMESTAMP,
     UNKNOWN
 };
 
@@ -24,6 +25,7 @@ inline DataType stringToDataType(const std::string& typeStr) {
     if (upperStr == "VARCHAR") return DataType::VARCHAR;
     if (upperStr == "DOUBLE") return DataType::DOUBLE;
     if (upperStr == "BOOLEAN") return DataType::BOOLEAN;
+    if (upperStr == "TIMESTAMP") return DataType::TIMESTAMP;
     return DataType::UNKNOWN;
 }
 

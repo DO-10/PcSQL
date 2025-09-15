@@ -12,8 +12,9 @@ const std::unordered_set<std::string> Lexer::keywords_ = {
     "ORDER", "BY", "GROUP", "HAVING", "LIMIT", "OFFSET",
     "DISTINCT", "PRIMARY", "KEY", "FOREIGN", "REFERENCES",
     "UNIQUE", "INDEX", "CHECK", "DEFAULT", "NULL", "IS",
-    // 新增：将数据类型作为关键字
-    "INT", "DOUBLE", "VARCHAR", "CHAR"
+    // 新增：将数据类型/常量/属性作为关键字，避免被识别为标识符
+    "INT", "DOUBLE", "VARCHAR", "CHAR",
+    "TIMESTAMP", "AUTO_INCREMENT", "CURRENT_TIMESTAMP"
 };
 
 // 2. 构造函数

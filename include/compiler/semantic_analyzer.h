@@ -35,6 +35,22 @@ private:
     TableSchema loadSchemaFromSys(const std::string& tableName) const;
     static std::string to_lower(std::string s);
 
+    // 约束检查相关辅助
+    struct ConstraintFlags { bool not_null=false; bool unique=false; bool primary=false; };
+    static ConstraintFlags parseConstraintFlags(const std::vector<std::string>& cons);
+    void checkConstraintsOnInsert(const std::string& tableName,
+                                  const TableSchema& schema,
+                                  const std::vector<std::string>& values,
+                                  size_t tokenIndex,
+                                  const std::vector<Token>& tokens);
+    void checkConstraintsOnUpdate(UpdateStatement* node,
+                                  const TableSchema& schema,
+                                  const std::vector<Token>& tokens);
+
+    // 简单 WHERE 谓词解析与评估（为 UPDATE 唯一性检查准备）
+    static bool parse_simple_condition(const std::string& cond, std::string& col, std::string& op, std::string& val);
+    static bool compare_typed(DataType type, const std::string& left, const std::string& op, const std::string& right);
+
 private:
     pcsql::StorageEngine* storage_ {nullptr};
 };
