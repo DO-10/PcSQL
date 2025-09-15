@@ -92,6 +92,11 @@ bool RecordManager::read(const RID& rid, std::string& out) {
     const Slot* s = slot_at(page, rid.slot_id);
     //获取槽指针
     if (s->off < 0 || s->len == 0) { buffer_.unpin_page(rid.page_id, false); return false; }
+    // 额外的边界检查，防止越界读取
+    if (static_cast<std::size_t>(s->off) < sizeof(Header) || static_cast<std::size_t>(s->off) + s->len > PAGE_SIZE) {
+        buffer_.unpin_page(rid.page_id, false);
+        return false;
+    }
     out.assign(page.data.data() + s->off, page.data.data() + s->off + s->len);
     buffer_.unpin_page(rid.page_id, false);
     return true;
@@ -106,6 +111,11 @@ bool RecordManager::update(const RID& rid, const char* data, std::size_t size) {
     if (rid.slot_id >= h.slot_count) { buffer_.unpin_page(rid.page_id, false); return false; }
     Slot* s = slot_at(page, rid.slot_id);
     if (s->off < 0 || s->len == 0) { buffer_.unpin_page(rid.page_id, false); return false; }
+    // 边界检查
+    if (static_cast<std::size_t>(s->off) < sizeof(Header) || static_cast<std::size_t>(s->off) + s->len > PAGE_SIZE) {
+        buffer_.unpin_page(rid.page_id, false);
+        return false;
+    }
     if (size <= s->len) {//如果新数据大小 size 小于等于现有记录长度 s->len，直接覆盖现有记录开始位置
         std::memcpy(page.data.data() + s->off, data, size);
         s->len = static_cast<std::uint16_t>(size);
@@ -170,10 +180,17 @@ std::vector<std::pair<RID, std::string>> RecordManager::scan(std::int32_t table_
         Page& page = buffer_.get_page(pid);
         ensure_initialized(page);
         const auto& h = header(page);
+        // 安全打印，帮助定位可能的卡住位置
+        // std::cout << "[RecordManager::scan] pid=" << pid << ", slot_count=" << h.slot_count << ", free_off=" << h.free_off << std::endl;
         for (std::uint16_t i = 0; i < h.slot_count; ++i) {
             const Slot* s = slot_at(page, i);
+            // 过滤非法槽，避免越界/异常分配
             if (s->off >= 0 && s->len > 0) {
-                out.emplace_back(RID{pid, i}, std::string(page.data.data() + s->off, s->len));
+                if (static_cast<std::size_t>(s->off) >= sizeof(Header) && static_cast<std::size_t>(s->off) + s->len <= PAGE_SIZE) {
+                    out.emplace_back(RID{pid, i}, std::string(page.data.data() + s->off, s->len));
+                } else {
+                    // std::cout << "[RecordManager::scan] skip invalid slot pid=" << pid << ", i=" << i << ", off=" << s->off << ", len=" << s->len << std::endl;
+                }
             }
         }
         buffer_.unpin_page(pid, false);

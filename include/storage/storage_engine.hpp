@@ -29,6 +29,15 @@ public:
         bootstrapping_ = false;
     }
 
+    ~StorageEngine() noexcept {
+        try {
+            flush_all();
+            std::cout << "[StorageEngine] flushed all dirty pages before exit" << std::endl;
+        } catch (...) {
+            // ignore exceptions during shutdown
+        }
+    }
+
     // Disk-level page operations
     std::uint32_t allocate_page() { return disk_.allocate_page(); }
     void free_page(std::uint32_t pid) { return disk_.free_page(pid); }
@@ -50,7 +59,7 @@ public:
         if (!bootstrapping_ && !is_system_table(name)) {
             insert_into_sys_tables(tid, name);
             insert_into_sys_columns(tid, columns);
-            std::cout << "[StorageEngine] save metadata successfully" << std::endl;
+            std::cout << "[StorageEngine] save metadata successfully: table '" << name << "' (tid=" << tid << ")" << std::endl;
         }
         return tid;
     }
@@ -234,19 +243,25 @@ private:
             insert_into_sys_columns(tid_columns, c_cols);
             insert_into_sys_columns(tid_indexes, i_cols);
             insert_into_sys_columns(tid_users, u_cols);
+            // 关键：立即持久化，避免下次启动再次判空并重复自举
+            flush_all();
+            std::cout << "[StorageEngine] bootstrapped system catalog rows in sys_tables/sys_columns (flushed)" << std::endl;
         }
     }
-
+    // 向系统表插入记录
     void insert_into_sys_tables(int tid, const std::string& name) {
         int sys_tid = tables_.get_table_id("sys_tables");
-        if (sys_tid < 0) return;
+        if (sys_tid < 0) { std::cout << "[StorageEngine] sys_tables not found when inserting" << std::endl; return; }
         std::ostringstream row; row << tid << "|" << name;
-        (void)records_.insert(sys_tid, row.str());
+        auto rid = records_.insert(sys_tid, row.str());
+        std::cout << "[StorageEngine] sys_tables+: rid=(" << rid.page_id << "," << rid.slot_id << ") row='" << row.str() << "'" << std::endl;
+        // persist immediately to avoid losing catalog rows on crash/restart
+        flush_page(rid.page_id);
     }
 
     void insert_into_sys_columns(int tid, const std::vector<ColumnMetadata>& columns) {
         int sys_cid = tables_.get_table_id("sys_columns");
-        if (sys_cid < 0) return;
+        if (sys_cid < 0) { std::cout << "[StorageEngine] sys_columns not found when inserting" << std::endl; return; }
         for (size_t i = 0; i < columns.size(); ++i) {
             const auto& col = columns[i];
             std::ostringstream row;
@@ -256,7 +271,10 @@ private:
                 if (k) row << ',';
                 row << col.constraints[k];
             }
-            (void)records_.insert(sys_cid, row.str());
+            auto rid = records_.insert(sys_cid, row.str());
+            std::cout << "[StorageEngine] sys_columns+: rid=(" << rid.page_id << "," << rid.slot_id << ") row='" << row.str() << "'" << std::endl;
+            // persist immediately to avoid losing catalog rows on crash/restart
+            flush_page(rid.page_id);
         }
     }
 

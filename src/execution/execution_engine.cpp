@@ -218,11 +218,128 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
 std::string ExecutionEngine::handleDelete(DeleteStatement* stmt) {
     int tid = storage_.get_table_id(to_lower(stmt->tableName));
     if (tid < 0) return "Table not found: " + stmt->tableName;
+
     auto rows = storage_.scan_table(tid);
-    size_t n=0; for (auto& kv: rows) { n += storage_.delete_record(kv.first) ? 1 : 0; }
+
+    // If there is a WHERE clause, filter rows first (type-aware comparison, same as SELECT)
+    std::vector<std::pair<RID, std::string>> targets;
+    if (stmt->whereClause) {
+        if (auto* where = dynamic_cast<WhereClause*>(stmt->whereClause.get())) {
+            std::string col, op, val;
+            if (parse_condition(where->condition, col, op, val)) {
+                std::string col_lc = to_lower(col);
+                const auto& schema = storage_.get_table_schema(to_lower(stmt->tableName));
+                int idx = -1; DataType dtype = DataType::UNKNOWN;
+                for (size_t i = 0; i < schema.columns.size(); ++i) {
+                    if (to_lower(schema.columns[i].name) == col_lc) { idx = static_cast<int>(i); dtype = schema.columns[i].type; break; }
+                }
+                if (idx >= 0) {
+                    targets.reserve(rows.size());
+                    for (const auto& kv : rows) {
+                        auto fields = split(kv.second, '|');
+                        if (idx < static_cast<int>(fields.size())) {
+                            const std::string& f = fields[idx];
+                            if (compare_typed(dtype, f, op, val)) targets.push_back(kv);
+                        }
+                    }
+                } else {
+                    // Column not found by some reason (should have been caught by semantic analyzer) -> no-op for safety
+                    targets.clear();
+                }
+            } else {
+                // WHERE exists but cannot be parsed -> do not delete anything for safety
+                targets.clear();
+            }
+        }
+    } else {
+        // No WHERE -> delete all rows (explicit full table delete)
+        targets = std::move(rows);
+    }
+
+    size_t n = 0;
+    for (auto& kv : targets) {
+        n += storage_.delete_record(kv.first) ? 1 : 0;
+    }
+
     std::ostringstream os; os << "DELETE OK count=" << n; return os.str();
 }
 
-std::string ExecutionEngine::handleUpdate(UpdateStatement* /*stmt*/) {
-    return "UPDATE not implemented (demo)";
+std::string ExecutionEngine::handleUpdate(UpdateStatement* stmt) {
+    int tid = storage_.get_table_id(to_lower(stmt->tableName));
+    if (tid < 0) return "Table not found: " + stmt->tableName;
+
+    // Load all rows to determine targets
+    auto rows = storage_.scan_table(tid);
+
+    // Build assignment plan: map column name -> (index, type, value)
+    const auto& schema = storage_.get_table_schema(to_lower(stmt->tableName));
+    struct Assign { int idx; DataType type; std::string value; };
+    std::vector<Assign> assigns; assigns.reserve(stmt->assignments.size());
+    for (const auto& kv : stmt->assignments) {
+        const std::string& col = kv.first;
+        const std::string& val = kv.second;
+        std::string col_lc = to_lower(col);
+        int idx = -1; DataType dtype = DataType::UNKNOWN;
+        for (size_t i = 0; i < schema.columns.size(); ++i) {
+            if (to_lower(schema.columns[i].name) == col_lc) { idx = static_cast<int>(i); dtype = schema.columns[i].type; break; }
+        }
+        if (idx >= 0) {
+            assigns.push_back({idx, dtype, val});
+        }
+        // If column not found (should be prevented by semantic analyzer), just skip for safety
+    }
+
+    // Determine target rows based on WHERE clause (same logic as SELECT/DELETE)
+    std::vector<std::pair<RID, std::string>> targets;
+    if (stmt->whereClause) {
+        if (auto* where = dynamic_cast<WhereClause*>(stmt->whereClause.get())) {
+            std::string col, op, val;
+            if (parse_condition(where->condition, col, op, val)) {
+                std::string col_lc = to_lower(col);
+                int idx = -1; DataType dtype = DataType::UNKNOWN;
+                for (size_t i = 0; i < schema.columns.size(); ++i) {
+                    if (to_lower(schema.columns[i].name) == col_lc) { idx = static_cast<int>(i); dtype = schema.columns[i].type; break; }
+                }
+                if (idx >= 0) {
+                    targets.reserve(rows.size());
+                    for (const auto& row : rows) {
+                        auto fields = split(row.second, '|');
+                        if (idx < static_cast<int>(fields.size())) {
+                            const std::string& f = fields[idx];
+                            if (compare_typed(dtype, f, op, val)) targets.push_back(row);
+                        }
+                    }
+                } else {
+                    // WHERE references unknown column -> do nothing for safety
+                    targets.clear();
+                }
+            } else {
+                // WHERE cannot be parsed -> do nothing for safety
+                targets.clear();
+            }
+        }
+    } else {
+        // No WHERE: update all rows
+        targets = std::move(rows);
+    }
+
+    // Apply assignments to each target row and write back
+    size_t n = 0;
+    for (const auto& kv : targets) {
+        auto fields = split(kv.second, '|');
+        bool changed = false;
+        for (const auto& a : assigns) {
+            if (a.idx >= 0 && a.idx < static_cast<int>(fields.size())) {
+                // For strings, lexer already removed quotes; for numbers they are raw digits.
+                fields[a.idx] = a.value;
+                changed = true;
+            }
+        }
+        if (changed) {
+            std::string new_row = join(fields, "|");
+            if (storage_.update_record(kv.first, new_row)) ++n;
+        }
+    }
+
+    std::ostringstream os; os << "UPDATE OK count=" << n; return os.str();
 }

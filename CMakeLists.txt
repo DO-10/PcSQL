@@ -55,3 +55,12 @@ enable_testing()
 add_test(NAME storage_basic_tests COMMAND storage_basic_tests)
 add_test(NAME storage_stress_tests COMMAND storage_stress_tests)
 add_test(NAME bptree_tests COMMAND bptree_tests)
+
+# Server executable for MySQL-compatible protocol
+add_executable(pcsql_mysqld
+    src/server/mysql_server.cpp
+)
+
+target_include_directories(pcsql_mysqld PRIVATE include)
+
+target_link_libraries(pcsql_mysqld PRIVATE pcsql_storage)

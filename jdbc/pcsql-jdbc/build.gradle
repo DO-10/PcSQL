@@ -1,0 +1,16 @@
+plugins {
+    id 'java'
+}
+
+dependencies {
+}
+
+jar {
+    manifest {
+        attributes(
+                'Implementation-Title': 'PcSQL JDBC Driver',
+                'Implementation-Version': project.version,
+                'Main-Class': 'com.pcsql.jdbc.PcSqlDriver'
+        )
+    }
+}
