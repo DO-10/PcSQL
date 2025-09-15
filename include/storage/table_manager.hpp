@@ -22,6 +22,9 @@ public:
     std::int32_t create_table(const std::string& name);
     bool drop_table_by_id(std::int32_t table_id);
     bool drop_table_by_name(const std::string& name);
+    // 新增：在删除表时释放页回收到 DiskManager
+    bool drop_table_by_id(std::int32_t table_id, DiskManager& disk);
+    bool drop_table_by_name(const std::string& name, DiskManager& disk);
 
     // Lookup
     std::int32_t get_table_id(const std::string& name) const;
@@ -44,7 +47,7 @@ private:
     std::int32_t next_table_id_{0};
     std::unordered_map<std::int32_t, std::string> id_to_name_;
     std::unordered_map<std::string, std::int32_t> name_to_id_;
-    std::unordered_map<std::int32_t, std::vector<std::uint32_t>> table_pages_;
+    std::unordered_map<std::int32_t, std::vector<std::uint32_t>> table_pages_;//table_pages_定义
 };
 
 } // namespace pcsql

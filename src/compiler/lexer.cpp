@@ -1,6 +1,7 @@
 #include "compiler/lexer.h"
 #include <cctype>
 #include <stdexcept>
+#include <iostream>
 #include <sstream> // 用于构建错误消息
 
 // 1. 静态成员变量的初始化
@@ -28,6 +29,32 @@ std::vector<Token> Lexer::tokenize() {
         current_token = getNextToken();
     }
     tokens.push_back(current_token);
+
+    // 调试输出：打印所有词法单元
+    try {
+        std::cout << "[Lexer] Tokens (" << tokens.size() << "):" << std::endl;
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            const Token& t = tokens[i];
+            const char* type_str = "";
+            switch (t.type) {
+                case TokenType::END_OF_FILE: type_str = "END_OF_FILE"; break;
+                case TokenType::KEYWORD:     type_str = "KEYWORD"; break;
+                case TokenType::IDENTIFIER:  type_str = "IDENTIFIER"; break;
+                case TokenType::NUMBER:      type_str = "NUMBER"; break;
+                case TokenType::STRING:      type_str = "STRING"; break;
+                case TokenType::OPERATOR:    type_str = "OPERATOR"; break;
+                case TokenType::DELIMITER:   type_str = "DELIMITER"; break;
+                default:                     type_str = "UNKNOWN"; break;
+            }
+            std::cout << "  [" << i << "] "
+                      << type_str << "('" << t.value << "')"
+                      << " at " << t.line << ":" << t.column
+                      << std::endl;
+        }
+    } catch (...) {
+        // 打印不应影响主流程
+    }
+
     return tokens;
 }
 

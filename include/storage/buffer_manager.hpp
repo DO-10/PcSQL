@@ -16,7 +16,7 @@ namespace pcsql {
 
 struct Page {
     std::uint32_t page_id{std::numeric_limits<std::uint32_t>::max()};
-    std::array<char, PAGE_SIZE> data{};
+    std::array<char, PAGE_SIZE> data{};//4096字节大小的数组
 };
 
 class BufferManager {

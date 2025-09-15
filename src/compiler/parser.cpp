@@ -2,12 +2,93 @@
 #include <stdexcept>
 #include <iostream>
 #include <sstream>
-#include "compiler/catalog.h"
-#include "compiler/semantic_analyzer.h"
-#include "compiler/ir_generator.h"
+// removed: #include "compiler/catalog.h"
+// removed: #include "compiler/semantic_analyzer.h"
+// removed: #include "compiler/ir_generator.h"
 
-// Parser 构造函数
-// 参数：tokens - 词法分析器生成的 Token 序列
+// ===== AST 调试打印辅助函数 =====
+namespace {
+    std::string indent(int level) { return std::string(level * 2, ' '); }
+
+    void printASTNode(const ASTNode* node, int level = 0) {
+        if (!node) {
+            std::cout << indent(level) << "<null ASTNode>" << std::endl;
+            return;
+        }
+        if (auto sel = dynamic_cast<const SelectStatement*>(node)) {
+            std::cout << indent(level) << "SelectStatement" << std::endl;
+            std::cout << indent(level+1) << "columns: ";
+            for (size_t i = 0; i < sel->columns.size(); ++i) {
+                std::cout << sel->columns[i] << (i + 1 < sel->columns.size() ? ", " : "");
+            }
+            std::cout << std::endl;
+            std::cout << indent(level+1) << "from: " << sel->fromTable << std::endl;
+            if (sel->whereClause) {
+                std::cout << indent(level+1) << "where:" << std::endl;
+                printASTNode(sel->whereClause.get(), level + 2);
+            }
+            return;
+        }
+        if (auto ct = dynamic_cast<const CreateTableStatement*>(node)) {
+            std::cout << indent(level) << "CreateTableStatement" << std::endl;
+            std::cout << indent(level+1) << "table: " << ct->tableName << std::endl;
+            std::cout << indent(level+1) << "columns:" << std::endl;
+            for (const auto& col : ct->columns) {
+                std::cout << indent(level+2) << col.name << " : " << col.type;
+                if (!col.constraints.empty()) {
+                    std::cout << " [";
+                    for (size_t i = 0; i < col.constraints.size(); ++i) {
+                        std::cout << col.constraints[i] << (i + 1 < col.constraints.size() ? ", " : "");
+                    }
+                    std::cout << "]";
+                }
+                std::cout << std::endl;
+            }
+            return;
+        }
+        if (auto ins = dynamic_cast<const InsertStatement*>(node)) {
+            std::cout << indent(level) << "InsertStatement" << std::endl;
+            std::cout << indent(level+1) << "table: " << ins->tableName << std::endl;
+            std::cout << indent(level+1) << "values: ";
+            for (size_t i = 0; i < ins->values.size(); ++i) {
+                std::cout << ins->values[i] << (i + 1 < ins->values.size() ? ", " : "");
+            }
+            std::cout << std::endl;
+            return;
+        }
+        if (auto del = dynamic_cast<const DeleteStatement*>(node)) {
+            std::cout << indent(level) << "DeleteStatement" << std::endl;
+            std::cout << indent(level+1) << "table: " << del->tableName << std::endl;
+            if (del->whereClause) {
+                std::cout << indent(level+1) << "where:" << std::endl;
+                printASTNode(del->whereClause.get(), level + 2);
+            }
+            return;
+        }
+        if (auto upd = dynamic_cast<const UpdateStatement*>(node)) {
+            std::cout << indent(level) << "UpdateStatement" << std::endl;
+            std::cout << indent(level+1) << "table: " << upd->tableName << std::endl;
+            std::cout << indent(level+1) << "set:" << std::endl;
+            for (const auto& kv : upd->assignments) {
+                std::cout << indent(level+2) << kv.first << " = " << kv.second << std::endl;
+            }
+            if (upd->whereClause) {
+                std::cout << indent(level+1) << "where:" << std::endl;
+                printASTNode(upd->whereClause.get(), level + 2);
+            }
+            return;
+        }
+        if (auto where = dynamic_cast<const WhereClause*>(node)) {
+            std::cout << indent(level) << "WhereClause" << std::endl;
+            std::cout << indent(level+1) << "condition: " << where->condition << std::endl;
+            return;
+        }
+        std::cout << indent(level) << "<Unknown ASTNode type>" << std::endl;
+    }
+}
+// ===== AST 调试打印辅助函数结束 =====
+
+// Parser 类实现
 Parser::Parser(const std::vector<Token>& tokens) : tokens_(tokens), pos_(0) {
     // 确保 Token 序列以 EOF 结束
     if (tokens_.empty() || tokens_.back().type != TokenType::END_OF_FILE) {
@@ -125,28 +206,15 @@ std::unique_ptr<ASTNode> Parser::parse() {
     
     std::cout << "Syntax analysis completed." << std::endl;
 
-    //  语义分析阶段 
-    Catalog catalog;  // 数据库目录（存储元数据）
-    SemanticAnalyzer semanticAnalyzer(catalog);
+    // 打印 AST（语法分析的输出）
     try {
-        // 执行语义检查（表/列是否存在，类型匹配等）
-        semanticAnalyzer.analyze(ast, tokens_);
-    } catch (const std::runtime_error& e) {
-        throw e;  // 传播错误
+        std::cout << "\nAST dump (from parser):" << std::endl;
+        printASTNode(ast.get(), 0);
+    } catch (...) {
+        // 打印不应影响主流程
     }
-    
-    //  中间代码生成阶段 
-    IRGenerator irGenerator;
-    // 生成四元式序列
-    std::vector<Quadruplet> quadruplets = irGenerator.generate(ast);
-    
-    // 打印生成的四元式
-    std::cout << "\nStarting IR generation (Quadruplets)..." << std::endl;
-    for (const auto& quad : quadruplets) {
-        std::cout << "(" << quad.op << ", " << quad.arg1 << ", " << quad.arg2 << ", " << quad.result << ")" << std::endl;
-    }
-    std::cout << "IR generation completed." << std::endl;
-    
+
+    // 仅返回 AST，后续的语义分析与 IR 生成由 Compiler 负责
     return ast;
 }
 
@@ -212,18 +280,18 @@ std::unique_ptr<ASTNode> Parser::parseCreateTableStatement() {
         std::string type = currentToken().value;
         eat(TokenType::KEYWORD);
 
-        // 【修改】新增：处理 CHAR 或 VARCHAR 后的长度
-        size_t length = 0; // 默认长度为0
-        if (Catalog::stringToDataType(type) == DataType::VARCHAR || Catalog::stringToDataType(type) == DataType::CHAR) {
-            eat("(");
-            if (currentToken().type != TokenType::NUMBER) {
-                reportError("Expected a number for CHAR/VARCHAR length.", pos_);
-            }
-            length = std::stoul(currentToken().value);
-            eat(TokenType::NUMBER);
-            eat(")");
-        }
-
+       // 【修改】新增：处理 CHAR 或 VARCHAR 后的长度
+size_t length = 0; // 默认长度为0
+// 直接检查类型字符串，不再依赖已移除的 Catalog 类
+if (type == "VARCHAR" || type == "CHAR") {
+    eat("(");
+    if (currentToken().type != TokenType::NUMBER) {
+        reportError("Expected a number for CHAR/VARCHAR length.", pos_);
+    }
+    length = std::stoul(currentToken().value);
+    eat(TokenType::NUMBER);
+    eat(")");
+}
         std::vector<std::string> constraints;
         while (currentToken().value != "," && currentToken().value != ")") {
             // 这里可以处理 PRIMARY KEY, UNIQUE, NOT NULL 等约束
@@ -269,7 +337,7 @@ std::unique_ptr<ASTNode> Parser::parseInsertStatement() {
     node->values = parseValueList();    // 解析值列表
     eat(")");
     eat(";");
-    
+
     return node;
 }
 
@@ -277,7 +345,7 @@ std::unique_ptr<ASTNode> Parser::parseInsertStatement() {
 std::unique_ptr<ASTNode> Parser::parseDeleteStatement() {
     std::cout << "Parsing DELETE statement..." << std::endl;
     auto node = std::make_unique<DeleteStatement>();
-    
+
     eat("DELETE");
     eat("FROM");
     node->tableTokenIndex = pos_;
@@ -285,7 +353,7 @@ std::unique_ptr<ASTNode> Parser::parseDeleteStatement() {
     eat(TokenType::IDENTIFIER);
     node->whereClause = parseOptionalWhere();    // 解析可选 WHERE 子句
     eat(";");
-    
+
     return node;
 }
 
@@ -302,60 +370,59 @@ std::unique_ptr<ASTNode> Parser::parseUpdateStatement() {
     node->assignments = parseSetClause();    // 解析 SET 子句
     node->whereClause = parseOptionalWhere();
     eat(";");
-    
+
     return node;
 }
 
-// === 子句解析实现 ===
-
-// 解析 SELECT 列列表（逗号分隔）
+// 解析 SELECT 列表
 std::vector<std::string> Parser::parseSelectList() {
-    std::vector<std::string> columns;
-    columns.push_back(currentToken().value);
-    eat(TokenType::IDENTIFIER);
-
-    // 处理多个列
-    while (currentToken().value == ",") {
-        advance();
-        columns.push_back(currentToken().value);
+    std::vector<std::string> cols;
+    while (true) {
+        cols.emplace_back(currentToken().value);
         eat(TokenType::IDENTIFIER);
+        if (currentToken().value == ",") {
+            eat(",");
+        } else {
+            break;
+        }
     }
-    
-    return columns;
+    return cols;
 }
 
 // 解析可选的 WHERE 子句
 std::unique_ptr<WhereClause> Parser::parseOptionalWhere() {
     if (currentToken().value == "WHERE") {
-        auto node = std::make_unique<WhereClause>();
-        advance();    // 跳过 WHERE
-        size_t conditionTokenIndex;
-        node->condition = parseCondition(conditionTokenIndex);    // 解析条件
-        node->tokenIndex = conditionTokenIndex;    // 记录条件起始位置
-        return node;
+        eat("WHERE");
+        auto where = std::make_unique<WhereClause>();
+        where->tokenIndex = pos_;
+        where->condition = parseCondition(where->tokenIndex);
+        return where;
     }
     return nullptr;    // 无 WHERE 子句
 }
 
 // 解析条件表达式（简化版）
 std::string Parser::parseCondition(size_t& tokenIndex) {
-    std::stringstream ss;
-    
-    tokenIndex = pos_;    // 记录起始位置
-    // 格式：标识符 操作符 值
-    ss << currentToken().value;
-    eat(TokenType::IDENTIFIER);
-    
-    ss << " " << currentToken().value;
-    eat(TokenType::OPERATOR);
-    
-    ss << " " << currentToken().value;
-    eat(currentToken().type);    // 根据实际类型消耗（数字/字符串等）
-    
-    return ss.str();
+    // 简化：WHERE 条件到下一个分号前的所有内容
+    std::ostringstream cond;
+    while (currentToken().value != ";") {
+        cond << currentToken().value << " ";
+        tokenIndex = pos_;
+        advance();
+    }
+    return cond.str();
 }
 
-// 解析列定义（单一列）
+std::vector<ColumnDefinition> Parser::parseColumnDefinitionList() {
+    std::vector<ColumnDefinition> columns;
+    columns.push_back(parseColumnDefinition());
+    while (currentToken().value == ",") {
+        eat(",");
+        columns.push_back(parseColumnDefinition());
+    }
+    return columns;
+}
+
 ColumnDefinition Parser::parseColumnDefinition() {
     std::string colName = currentToken().value;
     eat(TokenType::IDENTIFIER);
@@ -388,39 +455,20 @@ return ColumnDefinition(colName, colType, colLength, constraints);
 
 // 解析数据类型 (已在 parseColumnDefinition 中处理，此函数不再需要)
 std::string Parser::parseDataType() {
-    std::string dataType = currentToken().value;
-    eat(TokenType::IDENTIFIER); // 如 INT, VARCHAR 等
-    return dataType;
+    // 简化：类型是一个标识符
+    std::string type = currentToken().value;
+    eat(TokenType::IDENTIFIER);
+    return type;
 }
 
 
 // 解析列约束（PRIMARY KEY, UNIQUE, NOT NULL）
 std::vector<std::string> Parser::parseColumnConstraints() {
+    // 简化：可选的约束列表（如 PRIMARY, KEY, NOT, NULL 等）直到遇到 "," 或 ")" 结束
     std::vector<std::string> constraints;
-    while (currentToken().value == "PRIMARY" || 
-           currentToken().value == "UNIQUE" || 
-           currentToken().value == "NOT") {
-        
-        if (currentToken().value == "PRIMARY") {
-            std::stringstream ss;
-            ss << currentToken().value;
-            eat("PRIMARY");
-            ss << " " << currentToken().value;
-            eat("KEY");
-            constraints.push_back(ss.str());
-        } 
-        else if (currentToken().value == "UNIQUE") {
-            constraints.push_back(currentToken().value);
-            eat("UNIQUE");
-        } 
-        else if (currentToken().value == "NOT") {
-            std::stringstream ss;
-            ss << currentToken().value;
-            eat("NOT");
-            ss << " " << currentToken().value;
-            eat("NULL");
-            constraints.push_back(ss.str());
-        }
+    while (currentToken().value != "," && currentToken().value != ")") {
+        constraints.push_back(currentToken().value);
+        advance();
     }
     return constraints;
 }
@@ -428,42 +476,32 @@ std::vector<std::string> Parser::parseColumnConstraints() {
 // 解析值列表（INSERT）
 std::vector<std::string> Parser::parseValueList() {
     std::vector<std::string> values;
-    values.push_back(currentToken().value);
-    eat(currentToken().type);    // 根据实际类型消耗
-
-    // 处理多个值
-    while (currentToken().value == ",") {
-        advance();
+    while (currentToken().value != ")") {
         values.push_back(currentToken().value);
-        eat(currentToken().type);
+        advance();
+        if (currentToken().value == ",") {
+            eat(",");
+        }
     }
-    
     return values;
 }
 
 // 解析 SET 子句（UPDATE）
 std::map<std::string, std::string> Parser::parseSetClause() {
     std::map<std::string, std::string> assignments;
-    // 解析首个赋值：column = value
-    std::string column = currentToken().value;
-    eat(TokenType::IDENTIFIER);
-    eat("=");
-    std::string value = currentToken().value;
-    eat(currentToken().type);
-
-    assignments[column] = value;
-
-    // 处理多个赋值
-    while (currentToken().value == ",") {
-        advance();
-        column = currentToken().value;
+    while (true) {
+        std::string column = currentToken().value;
         eat(TokenType::IDENTIFIER);
         eat("=");
-        value = currentToken().value;
-        eat(currentToken().type);
+        std::string value = currentToken().value;
+        advance();
         assignments[column] = value;
+        if (currentToken().value == ",") {
+            eat(",");
+        } else {
+            break;
+        }
     }
-
     return assignments;
 }
 

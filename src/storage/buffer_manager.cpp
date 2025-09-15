@@ -15,9 +15,9 @@ BufferManager::BufferManager(DiskManager& disk, std::size_t capacity, Policy pol
 
 Page& BufferManager::get_page(std::uint32_t page_id) {
     auto it = page_table_.find(page_id);
-    if (it != page_table_.end()) {
+    if (it != page_table_.end()) {//如果没找到：it 等于 page_table_.end()
         // hit
-        stats_.hits++;
+        stats_.hits++;//命中数+1
         std::size_t idx = it->second;
         Frame& f = frames_[idx];
         f.pin_count++;
@@ -34,33 +34,33 @@ Page& BufferManager::get_page(std::uint32_t page_id) {
         return f.page;
     }
 
-    stats_.misses++;
+    stats_.misses++;//未命中
     // Need a free frame or evict one
-    std::size_t idx;
-    if (!free_list_.empty()) {
+    std::size_t idx;//被选frame索引
+    if (!free_list_.empty()) {//有空闲frame
         idx = free_list_.back();
         free_list_.pop_back();
     } else {
-        idx = pick_victim();
+        idx = pick_victim();//选择一个frame
     }
 
     Frame& f = frames_[idx];
     if (used_[idx]) {
         // evict existing page
         if (f.dirty) {
-            disk_.write_page(f.page.page_id, f.page.data.data());
+            disk_.write_page(f.page.page_id, f.page.data.data());//若脏页，写回磁盘
             stats_.flushes++;
             log("FLUSH dirty page " + std::to_string(f.page.page_id) + " before eviction");
         }
         log("EVICT page " + std::to_string(f.page.page_id) + " from frame " + std::to_string(idx));
-        page_table_.erase(f.page.page_id);
+        page_table_.erase(f.page.page_id);//删除 page_table_ 中的旧映射
         stats_.evictions++;
         // also remove from replacement structures if exists
         auto itpos = repl_pos_.find(idx);
         if (itpos != repl_pos_.end()) {
             repl_list_.erase(itpos->second);
             repl_pos_.erase(itpos);
-        }
+        }//删除替换队列中的旧映射
     }
 
     // load from disk
@@ -68,8 +68,8 @@ Page& BufferManager::get_page(std::uint32_t page_id) {
     disk_.read_page(page_id, f.page.data.data());
     f.dirty = false;
     f.pin_count = 1; // pinned by caller
-    used_[idx] = true;
-    page_table_[page_id] = idx;
+    used_[idx] = true;//填充used_
+    page_table_[page_id] = idx;//填充page_table_
     log("MISS load page " + std::to_string(page_id) + " into frame " + std::to_string(idx));
     return f.page;
 }
@@ -112,6 +112,7 @@ std::size_t BufferManager::pick_victim() {
 }
 
 void BufferManager::flush_page(std::uint32_t page_id) {
+    //写回单页
     auto it = page_table_.find(page_id);
     if (it == page_table_.end()) return; // not in buffer
     Frame& f = frames_[it->second];
