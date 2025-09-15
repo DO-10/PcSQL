@@ -30,6 +30,9 @@ private:
     void visit(InsertStatement* node);
     void visit(DeleteStatement* node);
     void visit(UpdateStatement* node);
+
+    // 新增：访问 CREATE INDEX 语句
+    void visit(CreateIndexStatement* node);
     
     // 辅助函数
     std::string newTemp(); // 创建一个新的临时变量

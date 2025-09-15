@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 #include <stdexcept>
-#include "catalog.h"
+#include "compiler/catalog.h"
 #include "compiler/parser.h"
 
 // 语义分析器类
@@ -22,6 +22,9 @@ private:
     void visit(InsertStatement* node, const std::vector<Token>& tokens);
     void visit(DeleteStatement* node, const std::vector<Token>& tokens);
     void visit(UpdateStatement* node, const std::vector<Token>& tokens);
+
+     // 新增：访问 CREATE INDEX 语句
+    void visit(CreateIndexStatement* node, const std::vector<Token>& tokens);
 
     // 辅助检查函数
     void checkValueType(const std::string& value, DataType expectedType);

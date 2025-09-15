@@ -1,104 +1,127 @@
-#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
 #include <memory>
 #include <sstream>
-
-#include "storage/storage_engine.hpp"
 #include "compiler/lexer.h"
 #include "compiler/parser.h"
 #include "compiler/semantic_analyzer.h"
 #include "compiler/ir_generator.h"
+#include "compiler/execution_plan_generator.h"
 #include "compiler/catalog.h"
 
-using namespace pcsql;
+// 辅助函数：将 Token 类型转换为字符串（方便调试）
+std::string tokenTypeToString(TokenType type) {
+    switch (type) {
+        case TokenType::END_OF_FILE: return "END_OF_FILE";
+        case TokenType::KEYWORD:     return "KEYWORD";
+        case TokenType::IDENTIFIER:  return "IDENTIFIER";
+        case TokenType::NUMBER:      return "NUMBER";
+        case TokenType::STRING:      return "STRING";
+        case TokenType::OPERATOR:    return "OPERATOR";
+        case TokenType::DELIMITER:   return "DELIMITER";
+        default:                     return "UNKNOWN";
+    }
+}
 
-// 这是一个函数，用于封装和测试整个SQL编译过程
-void test_sql_compiler(const std::string& sql_query) {
-    std::cout << "\n--- Testing SQL Compiler with Query: \"" << sql_query << "\" ---\n";
+// 辅助函数：打印 Token
+void printTokens(const std::vector<Token>& tokens) {
+    std::cout << "--- Tokens ---" << std::endl;
+    for (const auto& token : tokens) {
+        std::cout << "Type: " << tokenTypeToString(token.type) << ", Value: '" << token.value << "'" << std::endl;
+    }
+    std::cout << "--------------" << std::endl;
+}
+
+// 辅助函数：打印四元式
+void printIR(const std::vector<Quadruplet>& ir) {
+    std::cout << "--- Intermediate Representation (Quadruplets) ---" << std::endl;
+    for (const auto& q : ir) {
+        std::cout << "(" << q.op << ", " << q.arg1 << ", " << q.arg2 << ", " << q.result << ")" << std::endl;
+    }
+    std::cout << "-------------------------------------------------" << std::endl;
+}
+
+// 测试函数：运行整个编译和计划生成流程
+void test_sql_pipeline(const std::string& sql_statement, Catalog& catalog) {
+    std::cout << "=================================================" << std::endl;
+    std::cout << "Testing SQL: \"" << sql_statement << "\"" << std::endl;
     try {
         // 1. 词法分析
-        Lexer lexer(sql_query);
+        Lexer lexer(sql_statement);
         std::vector<Token> tokens = lexer.tokenize();
-        std::cout << "Tokenization successful! Tokens count: " << tokens.size() << "\n";
+        printTokens(tokens);
 
-        // 2. 语法分析
+        // 2. 语法分析 (AST 生成)
         Parser parser(tokens);
         std::unique_ptr<ASTNode> ast = parser.parse();
-        std::cout << "Parsing successful! AST generated.\n";
-        
-        // 3. 语义分析
-        Catalog catalog; // 创建一个目录实例
-        SemanticAnalyzer semantic_analyzer(catalog);
-        semantic_analyzer.analyze(ast, tokens);
-        std::cout << "Semantic analysis successful!\n";
 
-        // 4. 中间代码生成
+        // 3. 语义分析
+        SemanticAnalyzer analyzer(catalog);
+        analyzer.analyze(ast, tokens);
+
+        // 4. IR 生成
         IRGenerator ir_generator;
-        std::vector<Quadruplet> ir_code = ir_generator.generate(ast);
-        std::cout << "IR generation successful! Quadruplets:\n";
-        for (const auto& q : ir_code) {
-            std::cout << "  (" << q.op << ", " << q.arg1 << ", " << q.arg2 << ", " << q.result << ")\n";
+        std::vector<Quadruplet> ir = ir_generator.generate(ast);
+        printIR(ir);
+
+        // 5. 执行计划生成
+        ExecutionPlanGenerator plan_generator;
+        std::unique_ptr<PlanNode> plan = plan_generator.generate(ir);
+
+        // 模拟执行计划
+        switch (plan->type) {
+            case PlanNode::PlanNodeType::CREATE_TABLE:
+                std::cout << "Execution Plan: CREATE TABLE" << std::endl;
+                break;
+            case PlanNode::PlanNodeType::CREATE_INDEX:
+                std::cout << "Execution Plan: CREATE INDEX" << std::endl;
+                break;
+            case PlanNode::PlanNodeType::INSERT:
+                std::cout << "Execution Plan: INSERT" << std::endl;
+                break;
+            case PlanNode::PlanNodeType::SELECT:
+                std::cout << "Execution Plan: SELECT" << std::endl;
+                break;
+            case PlanNode::PlanNodeType::UPDATE:
+                std::cout << "Execution Plan: UPDATE" << std::endl;
+                break;
+            case PlanNode::PlanNodeType::DELETE:
+                std::cout << "Execution Plan: DELETE" << std::endl;
+                break;
         }
+        std::cout << "Test passed!" << std::endl;
 
     } catch (const std::runtime_error& e) {
-        std::cerr << "Compilation failed: " << e.what() << "\n";
+        std::cerr << "Error: " << e.what() << std::endl;
+        std::cerr << "Test failed!" << std::endl;
     }
-    std::cout << "--- End of SQL Compiler Test ---\n";
+    std::cout << "=================================================" << std::endl << std::endl;
 }
 
 int main() {
-std::cout << "--- Testing Storage Engine ---\n";
-    StorageEngine engine{"./storage_data", 4, Policy::LRU, true};
+    Catalog catalog;
 
-    // 演示：创建表并为表分配两页
-    auto tid = engine.create_table("users");
-    std::cout << "Created table 'users' with id: " << tid << "\n";
-    auto p1 = engine.allocate_table_page(tid);
-    auto p2 = engine.allocate_table_page(tid);
-    std::cout << "Allocated pages for table users: " << p1 << ", " << p2 << "\n";
+    // 1. 测试 CREATE TABLE 语句
+    test_sql_pipeline("CREATE TABLE students (id INT, name VARCHAR(50), grade DOUBLE, city CHAR(10));", catalog);
 
-    // 写入第一页
-    {
-        Page& page = engine.get_page(p1);
-        const char* msg = "hello users page1";
-        const size_t msg_len = std::strlen(msg);
-        
-        // 增加边界检查，并复制时包含空终止符
-        if (msg_len + 1 <= page.data.size()) {
-            std::memcpy(page.data.data(), msg, msg_len + 1);
-            std::cout << "Successfully wrote to page " << p1 << "\n";
-        } else {
-            std::cerr << "Error: Page buffer is too small to write message.\n";
-        }
-        engine.unpin_page(p1, true);
-    }
+    // 2. 测试 INSERT INTO 语句
+    test_sql_pipeline("INSERT INTO users VALUES ('1', 'Alice', 'alice@example.com', '30');", catalog);
+    
+    // 3. 测试 SELECT 语句
+    test_sql_pipeline("SELECT username, age FROM users WHERE age > 25;", catalog);
+    
+    // 【新增】测试 SELECT * 语句
+    test_sql_pipeline("SELECT * FROM users;", catalog);
 
-    // 再次读取并打印
-    {
-        Page& page = engine.get_page(p1);
-        // 读取时使用字符串构造函数，直到遇到空终止符
-        std::string read_msg(page.data.data());
-        std::cout << "Read page " << p1 << ": " << read_msg << "\n";
-        engine.unpin_page(p1, false);
-    }
+    // 4. 测试 UPDATE 语句
+    test_sql_pipeline("UPDATE users SET age = 31 WHERE username = 'Alice';", catalog);
 
-    // 遍历表页
-    const auto& pages = engine.get_table_pages(tid);
-    std::cout << "Table 'users' pages (" << pages.size() << "): ";
-    for (auto pid : pages) std::cout << pid << ' ';
-    std::cout << "\n";
+    // 5. 测试 DELETE FROM 语句
+    test_sql_pipeline("DELETE FROM employees WHERE id = 101;", catalog);
 
-    engine.flush_all();
-    const auto& st = engine.stats();
-    std::cout << "Stats - hit:" << st.hits << " miss:" << st.misses << " evict:" << st.evictions << " flush:" << st.flushes << "\n";
-std::cout << "--- End of Storage Engine Test ---\n";
-
-    // 调用 SQL 编译器测试函数
-    test_sql_compiler("SELECT id, username FROM users WHERE age > 25;");
-    test_sql_compiler("CREATE TABLE my_table (id INT PRIMARY KEY, name VARCHAR(20));");
-    test_sql_compiler("DELETE FROM products WHERE price > 100.0;");
+    // 6. 测试 CREATE INDEX 语句
+    test_sql_pipeline("CREATE INDEX idx_name ON employees (name);", catalog);
 
     return 0;
 }

@@ -5,9 +5,11 @@
 IRGenerator::IRGenerator() : temp_counter_(0) {}
 
 std::vector<Quadruplet> IRGenerator::generate(const std::unique_ptr<ASTNode>& ast) {
-    quadruplets_.clear(); // 清空上次的结果
+    quadruplets_.clear(); 
     
-    if (auto selectStmt = dynamic_cast<SelectStatement*>(ast.get())) {
+    if (auto createIndexStmt = dynamic_cast<CreateIndexStatement*>(ast.get())) {
+        visit(createIndexStmt);
+    } else if (auto selectStmt = dynamic_cast<SelectStatement*>(ast.get())) {
         visit(selectStmt);
     } else if (auto createTableStmt = dynamic_cast<CreateTableStatement*>(ast.get())) {
         visit(createTableStmt);
@@ -29,7 +31,6 @@ std::string IRGenerator::newTemp() {
 }
 
 void IRGenerator::visit(SelectStatement* node) {
-    // 处理 WHERE 子句
     std::string whereResult = "NULL";
     if (node->whereClause) {
         WhereClause* whereClause = dynamic_cast<WhereClause*>(node->whereClause.get());
@@ -37,27 +38,32 @@ void IRGenerator::visit(SelectStatement* node) {
         quadruplets_.push_back({"COMPARE", whereClause->condition, "NULL", temp});
         whereResult = temp;
     }
-    
-    // 生成 SELECT 指令
-    std::string columnsList;
-    for (const auto& col : node->columns) {
-        columnsList += col + ",";
-    }
-    if (!columnsList.empty()) {
-        columnsList.pop_back();
-    }
 
-    quadruplets_.push_back({"SELECT", columnsList, node->fromTable, whereResult});
+    quadruplets_.push_back({"SELECT_FROM", node->fromTable, whereResult, "NULL"});
+
+    // if (node->columns.empty() || node->columns[0] == "*") {
+    //     quadruplets_.push_back({"SELECT_COLUMN", "*", "NULL", "NULL"});
+    // } else {
+    //     for (const auto& column : node->columns) {
+    //         quadruplets_.push_back({"SELECT_COLUMN", column, "NULL", "NULL"});
+    //     }
+    // }
+    if (node->selectAll) {
+        quadruplets_.push_back({"SELECT_ALL", "NULL", "NULL", "NULL"});
+    } else {
+        // 为每一列生成一个四元式
+        for (const auto& column : node->columns) {
+            quadruplets_.push_back({"SELECT_COLUMN", column, "NULL", "NULL"});
+        }
+    }
 }
 
 void IRGenerator::visit(CreateTableStatement* node) {
     quadruplets_.push_back({"CREATE_TABLE", node->tableName, "NULL", "NULL"});
-    for (const auto& col : node->columns) {
-        std::string constraintsStr;
-        for (const auto& cons : col.constraints) {
-            constraintsStr += cons + " ";
-        }
-        quadruplets_.push_back({"ADD_COLUMN", col.name, col.type, constraintsStr});
+    for (const auto& colDef : node->columns) {
+        // 【修改】在四元式中包含 name, type 和 length
+        // 原本的 constraints 无法通过简单的四元式表达，我们只专注于修复 char(n) bug
+        quadruplets_.push_back({"COLUMN_DEF", colDef.name, colDef.type, std::to_string(colDef.length)});
     }
 }
 
@@ -92,4 +98,10 @@ void IRGenerator::visit(UpdateStatement* node) {
     for (const auto& assignment : node->assignments) {
         quadruplets_.push_back({"SET_ASSIGN", assignment.first, assignment.second, "NULL"});
     }
+}
+
+// 新增：访问 CREATE INDEX 语句
+void IRGenerator::visit(CreateIndexStatement* node) {
+    std::cout << "Generating IR for CREATE INDEX statement..." << std::endl;
+    quadruplets_.push_back({"CREATE_INDEX", node->indexName, node->tableName, node->columnName});
 }
