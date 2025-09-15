@@ -14,18 +14,30 @@
 PcSQL/
 ├── CMakeLists.txt
 ├── include/
-│   └── storage/
-│       ├── common.hpp           # 常量、Policy、Stats
-│       ├── disk_manager.hpp     # 磁盘页管理接口
-│       ├── buffer_manager.hpp   # 缓冲池接口
-│       ├── table_manager.hpp    # 表管理接口
-│       └── storage_engine.hpp   # 统一封装接口
+│   ├── compiler/
+│   │   ├── ir_generator.h
+│   │   ├── lexer.h
+│   │   ├── parser.h
+│   │   ├── semantic_analyzer.h
+│   │   └── catalog.h
+│   └── storage/
+│       ├── buffer_manager.hpp
+│       ├── common.hpp
+│       ├── disk_manager.hpp
+│       ├── storage_engine.hpp
+│       └── table_manager.hpp
 └── src/
-    ├── main.cpp                 # 演示程序
-    └── storage/
-        ├── disk_manager.cpp
-        ├── buffer_manager.cpp
-        └── table_manager.cpp
+    ├── compiler/
+│   │   ├── catalog.cpp
+│   │   ├── ir_generator.cpp
+│   │   ├── lexer.cpp
+│   │   ├── parser.cpp
+│   │   └── semantic_analyzer.cpp
+    ├── main.cpp
+    └── storage/
+        ├── buffer_manager.cpp
+        ├── disk_manager.cpp
+        └── table_manager.cpp
 ```
 
 运行期数据默认写入工作目录（或示例里使用的 ./storage_data）：

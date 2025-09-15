@@ -6,12 +6,14 @@
 
 // 1. 静态成员变量的初始化
 const std::unordered_set<std::string> Lexer::keywords_ = {
-    "SELECT", "FROM", "WHERE", "CREATE", "TABLE", "INSERT", 
-    "INTO", "VALUES", "UPDATE", "DELETE", "SET", "JOIN", 
+    "SELECT", "FROM", "WHERE", "CREATE", "TABLE", "INSERT",
+    "INTO", "VALUES", "UPDATE", "DELETE", "SET", "JOIN",
     "ON", "AS", "AND", "OR", "NOT", "LIKE", "IN", "BETWEEN",
     "ORDER", "BY", "GROUP", "HAVING", "LIMIT", "OFFSET",
     "DISTINCT", "PRIMARY", "KEY", "FOREIGN", "REFERENCES",
-    "UNIQUE", "INDEX", "CHECK", "DEFAULT", "NULL", "IS"
+    "UNIQUE", "INDEX", "CHECK", "DEFAULT", "NULL", "IS",
+    // 新增：将数据类型作为关键字
+    "INT", "DOUBLE", "VARCHAR", "CHAR"
 };
 
 // 2. 构造函数

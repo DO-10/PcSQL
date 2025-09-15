@@ -12,21 +12,39 @@ struct ASTNode {
     virtual ~ASTNode() = default;
 };
 
-// SELECT 语句节点
 struct SelectStatement : public ASTNode {
-    std::vector<std::string> columns;
-    std::string fromTable;
-    std::unique_ptr<ASTNode> whereClause;
-    size_t tableTokenIndex;
+    std::vector<std::string> columns;  // 选择的列
+    std::string fromTable;             // 来源表
+    std::unique_ptr<ASTNode> whereClause; // WHERE 子句
+    size_t tableTokenIndex;            // 表名在 token 流中的位置
+
+    bool selectAll = false;                // 新增：是否选择了所有列（*）    
 };
 
-// CREATE TABLE 语句节点
+// 代表 CREATE INDEX 语句的 AST 节点
+struct CreateIndexStatement : public ASTNode {
+    std::string indexName;
+    std::string tableName;
+    std::string columnName;
+    
+    CreateIndexStatement(const std::string& index, const std::string& table, const std::string& column)
+        : indexName(index), tableName(table), columnName(column) {}
+};
+
+// 修改后的 ColumnDefinition
 struct ColumnDefinition {
     std::string name;
     std::string type;
+    size_t length = 0; // 新增：用于存储 CHAR 或 VARCHAR 的长度
     std::vector<std::string> constraints;
-};
 
+    // 显式构造函数，用于支持列表初始化
+    ColumnDefinition(const std::string& name, const std::string& type, size_t len, const std::vector<std::string>& cons)
+        : name(name), type(type), length(len), constraints(cons) {}
+
+    // 默认构造函数
+    ColumnDefinition() = default;
+};
 struct CreateTableStatement : public ASTNode {
     std::string tableName;
     std::vector<ColumnDefinition> columns;
@@ -65,7 +83,7 @@ struct WhereClause : public ASTNode {
 class Parser {
 public:
     Parser(const std::vector<Token>& tokens);
-    
+
     std::unique_ptr<ASTNode> parse();
 
 private:
@@ -78,7 +96,11 @@ private:
     void advance();
     void eat(const std::string& expectedValue);
     void eat(TokenType expectedType);
+
+    void reportError(const std::string& message, size_t position) const;
+    // 原始函数保留，以兼容其他调用
     void reportError(const std::string& message) const;
+    
     
     // 语句解析函数 (对应顶级规则)
     std::unique_ptr<ASTNode> parseSelectStatement();
@@ -86,6 +108,9 @@ private:
     std::unique_ptr<ASTNode> parseInsertStatement();
     std::unique_ptr<ASTNode> parseDeleteStatement();
     std::unique_ptr<ASTNode> parseUpdateStatement();
+    
+     //处理 CREATE INDEX 语句的解析逻辑
+    std::unique_ptr<ASTNode> parseCreateIndexStatement();
 
     // 子句解析函数
     std::vector<std::string> parseSelectList();

@@ -20,11 +20,15 @@ public:
     void visit(DeleteStatement* node, const std::vector<Token>& tokens);
     void visit(UpdateStatement* node, const std::vector<Token>& tokens);
 
+    void visit(CreateIndexStatement* node, const std::vector<Token>& tokens);
+
 private:
     void reportError(const std::string& message, size_t tokenIndex, const std::vector<Token>& tokens);
     void checkValueType(const std::string& value, DataType expectedType);
     void checkColumnExistence(const std::string& tableName, const std::vector<std::string>& columns, const std::vector<Token>& tokens);
     void checkWhereClause(WhereClause* whereClause, const std::string& tableName, const std::vector<Token>& tokens);
+
+    bool isValidDataType(const std::string& type) const;
 
     // 查询系统表/缓存的辅助函数
     bool tableExists(const std::string& tableName) const;

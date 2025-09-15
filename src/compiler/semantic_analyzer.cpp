@@ -2,7 +2,6 @@
 #include <iostream>
 #include <sstream>
 #include <cctype>
-// removed: #include "system_catalog/schema_catalog.hpp"
 
 using namespace std;
 
@@ -109,13 +108,25 @@ void SemanticAnalyzer::analyze(const std::unique_ptr<ASTNode>& ast, const std::v
             visit(deleteStmt, tokens);
         } else if (auto updateStmt = dynamic_cast<UpdateStatement*>(ast.get())) {
             visit(updateStmt, tokens);
+        } else if (auto createIndexStmt = dynamic_cast<CreateIndexStatement*>(ast.get())) {
+            visit(createIndexStmt, tokens);
         } else {
             throw std::runtime_error("Semantic analysis error: Unsupported AST node type.");
         }
-        std::cout << "Semantic analysis completed successfully." << std::endl;
+        std::cout << "Semantic analysis successful." << std::endl;
     } catch (const std::runtime_error& e) {
-        throw e;
+        throw;
     }
+}
+
+bool SemanticAnalyzer::isValidDataType(const std::string& type) const {
+    // 将类型字符串转换为小写进行不区分大小写的比较
+    std::string lowerType = to_lower(type);
+    // 使用一个 std::unordered_set 来高效地检查合法类型
+    static const std::unordered_set<std::string> validTypes = {
+        "int", "double", "varchar", "char"
+    };
+    return validTypes.count(lowerType) > 0;
 }
 
 void SemanticAnalyzer::visit(SelectStatement* node, const std::vector<Token>& tokens) {
@@ -137,11 +148,10 @@ void SemanticAnalyzer::visit(CreateTableStatement* node, const std::vector<Token
     }
     // 2) 校验各列的数据类型是否合法
     for (const auto& colDef : node->columns) {
-        DataType type = stringToDataType(colDef.type);
-        if (type == DataType::UNKNOWN) {
-            reportError("Unsupported data type '" + colDef.type + "' for column '" + colDef.name + "'.", node->tableTokenIndex, tokens);
-        }
+    if (!isValidDataType(colDef.type)) {
+        reportError("Unsupported data type '" + colDef.type + "' for column '" + colDef.name + "'.", node->tableTokenIndex, tokens);
     }
+}
 }
 
 void SemanticAnalyzer::visit(InsertStatement* node, const std::vector<Token>& tokens) {
@@ -230,4 +240,23 @@ void SemanticAnalyzer::reportError(const std::string& message, size_t tokenIndex
     if (tokenIndex < tokens.size()) { line = tokens[tokenIndex].line; column = tokens[tokenIndex].column; }
     std::stringstream ss; ss << "Semantic Error: " << message << " at line " << line << ", column " << column << ".";
     throw std::runtime_error(ss.str());
+}
+void SemanticAnalyzer::visit(CreateIndexStatement* node, const std::vector<Token>& tokens) {
+    std::cout << "Semantic analysis for CREATE INDEX statement." << std::endl;
+
+    // 检查表是否存在
+    if (!tableExists(node->tableName)) {
+        reportError("Table '" + node->tableName + "' does not exist.", 0, tokens);
+    }
+
+    // 检查列是否存在
+    // 注意：这里的实现需要你确保 loadSchemaFromSys 函数能够正确访问存储引擎中的系统表
+    auto schema = loadSchemaFromSys(node->tableName);
+    // 这里我们将列名转换为小写进行检查
+    std::string lowerCol = node->columnName;
+    for (auto& ch : lowerCol) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+
+    if (schema.columnTypes.find(lowerCol) == schema.columnTypes.end()) {
+        reportError("Column '" + node->columnName + "' does not exist in table '" + node->tableName + "'.", 0, tokens);
+    }
 }
