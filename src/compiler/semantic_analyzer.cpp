@@ -2,6 +2,7 @@
 #include <iostream>
 #include <sstream>
 #include <cctype>
+// removed: #include "system_catalog/schema_catalog.hpp"
 
 using namespace std;
 
@@ -11,7 +12,7 @@ std::string SemanticAnalyzer::to_lower(std::string s) {
     return s;
 }
 
-// Query system catalog via system tables persisted in storage
+// 检查表是否存在的函数
 bool SemanticAnalyzer::tableExists(const std::string& tableName) const {
     if (!storage_) return false;
     // 直接通过物理目录映射判断是否存在（O(1)）：
@@ -21,53 +22,74 @@ bool SemanticAnalyzer::tableExists(const std::string& tableName) const {
 
 TableSchema SemanticAnalyzer::loadSchemaFromSys(const std::string& tableName) const {
     TableSchema schema;
-    if (!storage_) return schema;
+    if (!storage_) { std::cout << "[SemA] loadSchemaFromSys: storage_ is null" << std::endl; return schema; }
     int sys_tid = storage_->get_table_id("sys_tables");
     int sys_cid = storage_->get_table_id("sys_columns");
-    if (sys_tid < 0 || sys_cid < 0) return schema;
+    std::cout << "[SemA] loadSchemaFromSys: table=" << tableName
+              << ", sys_tid=" << sys_tid << ", sys_cid=" << sys_cid << std::endl;
 
-    // Find table id by name
-    int table_id = -1;
-    std::string target = to_lower(tableName);
-    for (const auto& kv : storage_->scan_table(sys_tid)) {
-        const std::string& row = kv.second;
-        auto pos = row.find('|');
-        if (pos == std::string::npos) continue;
-        std::string id_str = row.substr(0, pos);
-        std::string name = row.substr(pos + 1);
-        if (to_lower(name) == target) {
-            try { table_id = std::stoi(id_str); } catch (...) { table_id = -1; }
-            break;
+    if (sys_tid >= 0 && sys_cid >= 0) {
+        // Find table id by name
+        int table_id = -1;
+        std::string target = to_lower(tableName);
+        auto sys_tables_rows = storage_->scan_table(sys_tid);
+        std::cout << "[SemA] scan sys_tables rows=" << sys_tables_rows.size() << std::endl;
+        size_t dump_cnt = 0;
+        for (const auto& kv : sys_tables_rows) {
+            const std::string& row = kv.second;
+            auto pos = row.find('|');
+            if (pos == std::string::npos) continue;
+            std::string id_str = row.substr(0, pos);
+            std::string name = row.substr(pos + 1);
+            if (dump_cnt < 16) {
+                std::cout << "[SemA] sys_tables row: id=" << id_str << ", name=" << name << std::endl;
+                ++dump_cnt;
+            }
+            if (to_lower(name) == target) {
+                try { table_id = std::stoi(id_str); } catch (...) { table_id = -1; }
+                break;
+            }
         }
+        if (table_id >= 0) {
+            auto sys_columns_rows = storage_->scan_table(sys_cid);
+            std::cout << "[SemA] scan sys_columns rows=" << sys_columns_rows.size() << ", for tid=" << table_id << std::endl;
+            for (const auto& kv : sys_columns_rows) {
+                const std::string& row = kv.second;
+                // format: table_id|col_index|name|type|constraints
+                std::vector<std::string> parts; parts.reserve(5);
+                size_t start = 0; size_t pos = 0;
+                while ((pos = row.find('|', start)) != std::string::npos) {
+                    parts.emplace_back(row.substr(start, pos - start));
+                    start = pos + 1;
+                }
+                parts.emplace_back(row.substr(start));
+                if (parts.size() < 4) continue;
+                try {
+                    int tid = std::stoi(parts[0]);
+                    if (tid != table_id) continue;
+                    std::string col_name = parts[2];
+                    std::string type_str = parts[3];
+                    DataType dt = stringToDataType(type_str);
+                    ColumnMetadata col{col_name, dt, {}};
+                    schema.columns.push_back(col);
+                    std::string lower = col_name; for (auto& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                    schema.columnTypes[lower] = dt;
+                } catch (...) {
+                    continue;
+                }
+            }
+            std::cout << "[SemA] built schema from sys_* columns=" << schema.columns.size() << std::endl;
+        } else {
+            std::cout << "[SemA] table not found in sys_tables: " << tableName << std::endl;
+        }
+    } else {
+        std::cout << "[SemA] sys_* tables are unavailable (tid=" << sys_tid << ", cid=" << sys_cid << ")" << std::endl;
     }
-    if (table_id < 0) return schema;
 
-    // Collect columns for this table id
-    for (const auto& kv : storage_->scan_table(sys_cid)) {
-        const std::string& row = kv.second;
-        // format: table_id|col_index|name|type|constraints
-        std::vector<std::string> parts; parts.reserve(5);
-        size_t start = 0; size_t pos = 0;
-        while ((pos = row.find('|', start)) != std::string::npos) {
-            parts.emplace_back(row.substr(start, pos - start));
-            start = pos + 1;
-        }
-        parts.emplace_back(row.substr(start));
-        if (parts.size() < 4) continue;
-        try {
-            int tid = std::stoi(parts[0]);
-            if (tid != table_id) continue;
-            std::string col_name = parts[2];
-            std::string type_str = parts[3];
-            DataType dt = stringToDataType(type_str);
-            ColumnMetadata col{col_name, dt, {}};
-            schema.columns.push_back(col);
-            std::string lower = col_name; for (auto& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-            schema.columnTypes[lower] = dt;
-        } catch (...) {
-            continue;
-        }
+    if (schema.columns.empty()) {
+        std::cout << "[SemA] schema is empty for table '" << tableName << "' (sys_* is the single source)." << std::endl;
     }
+
     return schema;
 }
 // 重要：语义分析入口
@@ -123,9 +145,11 @@ void SemanticAnalyzer::visit(CreateTableStatement* node, const std::vector<Token
 }
 
 void SemanticAnalyzer::visit(InsertStatement* node, const std::vector<Token>& tokens) {
+    //先检查表是否存在
     if (!tableExists(node->tableName)) {
         reportError("Table '" + node->tableName + "' does not exist.", node->tableTokenIndex, tokens);
     }
+    //检查列
     const auto schema = loadSchemaFromSys(node->tableName);
     if (schema.columns.size() != node->values.size()) {
         std::stringstream ss;

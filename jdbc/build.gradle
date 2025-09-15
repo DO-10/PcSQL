@@ -1,0 +1,14 @@
+plugins {
+    id 'java'
+}
+
+allprojects {
+    group = 'com.pcsql'
+    version = '0.1.0'
+}
+
+subprojects {
+    apply plugin: 'java'
+    repositories { mavenCentral() }
+    java { sourceCompatibility = JavaVersion.VERSION_11; targetCompatibility = JavaVersion.VERSION_11 }
+}
