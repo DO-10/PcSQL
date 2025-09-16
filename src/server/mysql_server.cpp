@@ -13,6 +13,7 @@
 #include <atomic>
 #include <errno.h>
 #include <sys/select.h>
+#include <cctype>
 
 #include "storage/storage_engine.hpp"
 #include "execution/execution_engine.h"
@@ -24,6 +25,9 @@ namespace {
 // -------- Utils --------
 static inline std::string to_lower(std::string s){ for(auto &c:s) c=(char)std::tolower((unsigned char)c); return s; }
 static inline std::vector<std::string> split(const std::string& s, char delim){ std::vector<std::string> out; std::string cur; std::istringstream iss(s); while(std::getline(iss,cur,delim)) out.push_back(cur); return out; }
+
+// simple trim
+static inline std::string trim(const std::string& s){ size_t b=0,e=s.size(); while(b<e && std::isspace((unsigned char)s[b])) ++b; while(e>b && std::isspace((unsigned char)s[e-1])) --e; return s.substr(b,e-b); }
 
 // length-encoded integer write
 static void lenc_int(std::vector<uint8_t>& b, uint64_t v){
@@ -51,7 +55,8 @@ static int mysql_type_from(DataType t){
     }
 }
 
-static std::string trim(const std::string& s){ size_t b=0,e=s.size(); while(b<e && isspace((unsigned char)s[b])) ++b; while(e>b && isspace((unsigned char)s[e-1])) --e; return s.substr(b,e-b); }
+// duplicate trim removed (use the inline trim defined above)
+// removed duplicate trim (use the inline trim defined above)
 
 // strip leading block comments like /* ... */ (including MySQL /*! ... */ hints)
 static std::string strip_leading_block_comments(const std::string& in){
@@ -77,6 +82,9 @@ static std::string normalize_sql(const std::string& in){
     if (sl == "select 'keep alive'" || sl == "select \"keep alive\"") return "select 1";
     return s;
 }
+
+// Removed server-side WHERE helpers (now handled by ExecutionEngine)
+// parse_condition, to_bool_ci, compare_typed
 
 // write a packet with header (3-byte length + 1-byte seq)
 static bool write_packet(int fd, uint8_t& seq, const std::vector<uint8_t>& payload){
@@ -145,7 +153,16 @@ class MySQLServer {
 public:
     //构造函数，初始化存储引擎和执行引擎。
     MySQLServer()
-        : storage_("./storage_data", 64, Policy::LRU, true), exec_(storage_) {}
+        : storage_("./storage_data", 64, Policy::LRU, true), exec_(storage_) {
+        // 支持通过环境变量默认开启索引跟踪：PCSQL_INDEX_TRACE=1|on|true|yes
+        if (const char* env = std::getenv("PCSQL_INDEX_TRACE")) {
+            std::string v = to_lower(std::string(env));
+            if (v == "1" || v == "on" || v == "true" || v == "yes") {
+                storage_.set_index_trace(true);
+                std::cout << "[MySQLCompat] PCSQL_INDEX_TRACE enabled by env" << std::endl;
+            }
+        }
+    }
 
     int run(uint16_t port = 3307){
         int srv = socket(AF_INET, SOCK_STREAM, 0); if(srv<0){ perror("socket"); return 1; }
@@ -272,7 +289,27 @@ private:
             std::cout << "[MySQLCompat] Shutdown requested by client via SQL ('" << ns << "')" << std::endl;
             return;
         }
-        if(usql.rfind("set ",0)==0){ auto ok = make_ok(); if(!write_packet(fd, seq, ok)){ std::cerr << "[MySQLCompat] Failed to send OK for SET" << std::endl; } return; }
+        if(usql.rfind("set ",0)==0){
+            // 支持运行时开启/关闭索引跟踪：
+            //   SET pcsql_index_trace=ON; / OFF;  (大小写不敏感，支持 1/0/true/false/yes/no)
+            //   也兼容 SET @@pcsql_index_trace=1;
+            std::string after = ns.substr(4); // strip leading 'SET '
+            after = trim(after);
+            while(!after.empty() && after[0]=='@'){ after.erase(after.begin()); }
+            after = trim(after);
+            auto pos = after.find('=');
+            if (pos != std::string::npos) {
+                std::string key = to_lower(trim(after.substr(0, pos)));
+                std::string val = to_lower(trim(after.substr(pos+1)));
+                if (key == "pcsql_index_trace" || key == "index_trace") {
+                    bool on = (val == "1" || val == "on" || val == "true" || val == "yes");
+                    storage_.set_index_trace(on);
+                    std::cout << "[MySQLCompat] set index_trace=" << (on?"on":"off") << std::endl;
+                    auto ok = make_ok(); if(!write_packet(fd, seq, ok)){ std::cerr << "[MySQLCompat] Failed to send OK for SET index_trace" << std::endl; }
+                    return;
+                }
+            }
+            auto ok = make_ok(); if(!write_packet(fd, seq, ok)){ std::cerr << "[MySQLCompat] Failed to send OK for SET" << std::endl; } return; }
         if(usql=="select 1" || usql=="select 1;"){
             // one-column, one-row result
             std::vector<uint8_t> pcols; lenc_int(pcols, 1); if(!write_packet(fd, seq, pcols)) { std::cerr << "[MySQLCompat] Failed to send column-count for select 1" << std::endl; return; }
@@ -291,6 +328,56 @@ private:
         if(usql.rfind("show ",0)==0){ // naive OK to bypass client checks
             auto ok = make_ok(); if(!write_packet(fd, seq, ok)){ std::cerr << "[MySQLCompat] Failed to send OK for SHOW" << std::endl; } return; }
 
+        // --- Minimal CREATE INDEX support (server-side quick parser) ---
+        if (usql.rfind("create index", 0) == 0 || usql.rfind("create unique index", 0) == 0) {
+            bool unique = (usql.rfind("create unique index", 0) == 0);
+            // remove trailing semicolon in the original-normalized SQL
+            std::string s = ns;
+            if (!s.empty() && s.back() == ';') s.pop_back();
+            // expected forms:
+            //   CREATE INDEX idx_name ON table_name(col_name)
+            //   CREATE UNIQUE INDEX idx_name ON table_name(col_name)
+            auto lower = to_lower(s);
+            auto err_out = [&](const std::string& m){ auto err = make_err(1064, m); if(!write_packet(fd, seq, err)){ std::cerr << "[MySQLCompat] Failed to send ERR for CREATE INDEX" << std::endl; } };
+
+            size_t kw_pos = lower.find("create");
+            size_t idx_kw = lower.find(" index ", kw_pos);
+            if (idx_kw == std::string::npos) idx_kw = lower.find(" index", kw_pos);
+            size_t on_pos = lower.find(" on ", (idx_kw==std::string::npos? kw_pos : idx_kw));
+            if (kw_pos == std::string::npos || on_pos == std::string::npos) { err_out("Malformed CREATE INDEX"); return; }
+
+            size_t name_start = lower.find("index", kw_pos);
+            if (name_start == std::string::npos) { err_out("Missing INDEX keyword"); return; }
+            name_start += 5; // skip 'index'
+            while (name_start < s.size() && std::isspace((unsigned char)s[name_start])) ++name_start;
+            std::string index_name = trim(s.substr(name_start, on_pos - name_start));
+
+            size_t paren_l = s.find('(', on_pos + 4);
+            size_t paren_r = s.find(')', (paren_l == std::string::npos ? on_pos + 4 : paren_l));
+            if (paren_l == std::string::npos || paren_r == std::string::npos || paren_r <= paren_l) { err_out("Missing or invalid column list"); return; }
+            std::string table_name = trim(s.substr(on_pos + 4, paren_l - (on_pos + 4)));
+            std::string column_name = trim(s.substr(paren_l + 1, paren_r - (paren_l + 1)));
+
+            auto dequote = [&](const std::string& x){ std::string y; y.reserve(x.size()); for(char c: x){ if(c!='`' && c!='"' && c!='\''){ y.push_back(c); } } return trim(y); };
+            index_name = dequote(index_name);
+            table_name = dequote(table_name);
+            column_name = dequote(column_name);
+
+            try{
+                std::cout << "[MySQLCompat] CREATE " << (unique?"UNIQUE ":"") << "INDEX request: index='" << index_name
+                          << "' on " << table_name << "(" << column_name << ")" << std::endl;
+                bool okb = storage_.create_index(index_name, table_name, column_name, unique);
+                if (okb) {
+                    auto ok = make_ok(); if(!write_packet(fd, seq, ok)){ std::cerr << "[MySQLCompat] Failed to send OK for CREATE INDEX" << std::endl; }
+                } else {
+                    err_out("CREATE INDEX failed");
+                }
+            } catch(const std::exception& e){
+                err_out(std::string("CREATE INDEX error: ")+e.what());
+            }
+            return;
+        }
+
         try{
             // 在进入编译阶段前，确保语句以分号结尾
             std::string compileSql = ns;
@@ -299,11 +386,13 @@ private:
             }
             Compiler compiler; auto unit = compiler.compile(compileSql, storage_);
             if (auto* s = dynamic_cast<SelectStatement*>(unit.ast.get())){
-                // Build result set from storage
+                // Use execution engine to build result rows (with WHERE and index pushdown)
                 int tid = storage_.get_table_id(to_lower(s->fromTable));
                 if(tid < 0){ auto err = make_err(1146, "Table not found: "+s->fromTable); if(!write_packet(fd, seq, err)){ std::cerr << "[MySQLCompat] Failed to send ERR for table not found" << std::endl; } return; }
                 const auto& schema = storage_.get_table_schema(to_lower(s->fromTable));
-                auto rows = storage_.scan_table(tid);
+
+                auto rows = exec_.selectRows(s);
+
                 // columns list: if not matching '*', use provided identifiers intersecting schema; our parser doesn't support '*'
                 std::vector<int> col_idx; std::vector<std::string> col_names;
                 if(s->columns.empty()){
@@ -334,7 +423,7 @@ private:
             bool okSent = write_packet(fd, seq, ok);//发送回应
             std::cout << (okSent ? "[MySQLCompat] OK sent" : "[MySQLCompat] Failed to send OK") << std::endl;
         } catch(const std::exception& e){
-            auto err = make_err(1064, std::string("Execution failed: ")+e.what()); if(!write_packet(fd, seq, err)){ std::cerr << "[MySQLCompat] Failed to send ERR for exception" << std::endl; }
+            auto err = make_err(1064, std::string(e.what())); if(!write_packet(fd, seq, err)){ std::cerr << "[MySQLCompat] Failed to send ERR for exception" << std::endl; }
         }
     }
 

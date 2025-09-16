@@ -136,3 +136,42 @@ Stats - hit:1 miss:1 evict:0 flush:1
  ## 删除表
  DROP TABLE
  
+ # 测试
+
+## CREATE TABLE语句,支持主键，非空约束，支持INT, VARCHAR,CHAR类型
+CREATE TABLE students (
+    id INT PRIMARY KEY,
+    name VARCHAR(255),
+    age INT
+);
+
+## INSERT INTO语句,支持INSERT INTO table_name VALUES (value1, value2, ...)
+INSERT INTO students VALUES (1, 'a', 18);
+
+## SELECT语句,支持SELECT * FROM table_name
+SELECT * FROM students;
+
+## DELETE FROM语句,支持DELETE FROM table_name WHERE condition
+DELETE FROM students WHERE id = 1;
+
+## CREATE INDEX语句,支持CREATE INDEX index_name ON table_name (column_name)
+CREATE INDEX idx_name ON students (name);
+
+## UPDATE语句,支持UPDATE table_name SET column1 = value1 WHERE condition
+UPDATE students SET name = 'b' WHERE id = 1;
+SELECT * FROM students;
+
+## DROP TABLE语句,支持DROP TABLE table_name
+DROP TABLE students;
+
+## 系统目录支持检索
+SELECT * FROM sys_tables;
+SELECT * FROM sys_indexes;
+SELECT * FROM sys_columns;
+
+## 存储引擎(页4KB)
+## 缓存管理(LRU)
+## 数据持久化
+## B+树索引
+SELECT a FROM s WHERE a=60
+SELECT a FROM r WHERE a=60

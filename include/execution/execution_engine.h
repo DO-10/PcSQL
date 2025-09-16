@@ -23,6 +23,9 @@ public:
     // 接收编译结果执行
     std::string execute(const Compiler::CompiledUnit& unit);
 
+    // 新增：直接返回 SELECT 的原始行（record-string，使用 '|' 分隔字段）供服务器封包
+    std::vector<std::pair<pcsql::RID, std::string>> selectRows(SelectStatement* stmt);
+
 private:
     // 语句分派
     std::string handleSelect(SelectStatement* stmt);
@@ -36,6 +39,11 @@ private:
 
     // 便捷：把表按行扫描转为二维文本
     static std::string format_rows(const std::vector<std::pair<pcsql::RID, std::string>>& rows);
+
+    // 复用：构建 SELECT 结果行，并可选输出调试信息（索引范围等）。
+    bool buildSelectRows(SelectStatement* stmt,
+                         std::vector<std::pair<pcsql::RID, std::string>>& rows_out,
+                         std::string* debug_out);
 
 private:
     pcsql::StorageEngine& storage_;

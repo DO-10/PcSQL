@@ -99,7 +99,7 @@ namespace {
 Parser::Parser(const std::vector<Token>& tokens) : tokens_(tokens), pos_(0) {
     // 确保 Token 序列以 EOF 结束
     if (tokens_.empty() || tokens_.back().type != TokenType::END_OF_FILE) {
-        throw std::runtime_error("Lexical analysis did not return EOF token, cannot proceed with parsing.");
+        throw std::runtime_error("[语法, (line 0, column 0), Lexical analysis did not return EOF token]");
     }
 }
 
@@ -107,7 +107,7 @@ Parser::Parser(const std::vector<Token>& tokens) : tokens_(tokens), pos_(0) {
 const Token& Parser::currentToken() const {
     // 检查是否超出 Token 范围
     if (pos_ >= tokens_.size()) {
-        throw std::runtime_error("Unexpected end of input during parsing.");
+        throw std::runtime_error("[语法, (line 0, column 0), Unexpected end of input during parsing]");
     }
     return tokens_[pos_];
 }
@@ -115,7 +115,7 @@ const Token& Parser::currentToken() const {
 // 查看下一个 Token（不消耗）
 const Token& Parser::peekNextToken() const {
     if (pos_ + 1 >= tokens_.size()) {
-        throw std::runtime_error("Cannot peek next token, input has ended.");
+        throw std::runtime_error("[语法, (line 0, column 0), Cannot peek next token, input has ended]");
     }
     return tokens_[pos_ + 1];
 }
@@ -128,11 +128,9 @@ void Parser::advance() {
 // 匹配并消耗特定值的 Token
 void Parser::eat(const std::string& expectedValue) {
     if (currentToken().value != expectedValue) {
-        // 构建详细的错误信息（包含行列位置）
         std::stringstream ss;
-        ss << "Syntax error: At line " << currentToken().line << ", column " << currentToken().column
-           << ", expected '" << expectedValue << "' but got '" << currentToken().value << "'.";
-        throw std::runtime_error(ss.str());
+        ss << "Expected '" << expectedValue << "' but got '" << currentToken().value << "'";
+        reportError(ss.str(), pos_);
     }
     advance();
 }
@@ -141,10 +139,10 @@ void Parser::eat(const std::string& expectedValue) {
 void Parser::eat(TokenType expectedType) {
     if (currentToken().type != expectedType) {
         std::stringstream ss;
-        ss << "Syntax error: At line " << currentToken().line << ", column " << currentToken().column
-           << ", expected type " << static_cast<int>(expectedType) << " but got type "
-           << static_cast<int>(currentToken().type) << " ('" << currentToken().value << "').";
-        throw std::runtime_error(ss.str());
+        ss << "Expected token type " << static_cast<int>(expectedType)
+           << " but got type " << static_cast<int>(currentToken().type)
+           << " ('" << currentToken().value << "')";
+        reportError(ss.str(), pos_);
     }
     advance();
 }
@@ -155,12 +153,11 @@ void Parser::reportError(const std::string& message, size_t position) const {
     if (position < tokens_.size()) {
         const Token& errorToken = tokens_[position];
         std::stringstream ss;
-        ss << "Parser Error: " << message << " at line " << errorToken.line 
-           << ", column " << errorToken.column << ".";
+        ss << "[语法, (line " << errorToken.line << ", column " << errorToken.column << "), " << message << "]";
         throw std::runtime_error(ss.str());
     } else {
         std::stringstream ss;
-        ss << "Parser Error: " << message << " at the end of input.";
+        ss << "[语法, (line 0, column 0), " << message << "]";
         throw std::runtime_error(ss.str());
     }
 }
@@ -439,14 +436,22 @@ std::unique_ptr<WhereClause> Parser::parseOptionalWhere() {
     return nullptr;    // 无 WHERE 子句
 }
 
-// 解析条件表达式（简化版）
+// 解析条件表达式（改进版：保留字符串字面量引号，便于执行阶段稳健解析）
 std::string Parser::parseCondition(size_t& tokenIndex) {
-    // 简化：WHERE 条件到下一个分号前的所有内容
     std::ostringstream cond;
+    bool first = true;
     while (currentToken().value != ";") {
-        cond << currentToken().value << " ";
+        const Token& t = currentToken();
+        if (!first) cond << " ";
+        if (t.type == TokenType::STRING) {
+            // 词法器已去掉引号，这里补回引号以避免值中包含空格/运算符时解析出错
+            cond << "'" << t.value << "'";
+        } else {
+            cond << t.value;
+        }
         tokenIndex = pos_;
         advance();
+        first = false;
     }
     return cond.str();
 }

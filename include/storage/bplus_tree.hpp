@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 #include <functional>
+#include <iostream>
 
 #include "storage/buffer_manager.hpp"
 #include "storage/disk_manager.hpp"
@@ -26,6 +27,15 @@ struct FixedString {
     }
 };
 
+// Add ostream printer for FixedString keys (print up to first '\0')
+template <std::size_t N>
+inline std::ostream& operator<<(std::ostream& os, const FixedString<N>& s) {
+    std::size_t len = 0;
+    while (len < N && s.data[len] != '\0') ++len;
+    os.write(s.data, static_cast<std::streamsize>(len));
+    return os;
+}
+
 template <std::size_t N>
 inline bool operator<(const FixedString<N>& a, const FixedString<N>& b) {
     return std::memcmp(a.data, b.data, N) < 0;
@@ -37,6 +47,9 @@ class BPlusTreeT {
 public:
     explicit BPlusTreeT(DiskManager& disk, BufferManager& buffer)
         : disk_(disk), buffer_(buffer) {}
+
+    // Enable/disable verbose tracing for educational/demo purposes
+    void set_trace(bool on) { trace_ = on; }
 
     // Create a new empty B+Tree and return the root page id (persist this in your catalog)
     std::uint32_t create();
@@ -119,6 +132,7 @@ private:
     BufferManager& buffer_;
     std::uint32_t root_{std::numeric_limits<std::uint32_t>::max()};
     Comparator comp_{};
+    bool trace_{false};
 };
 
 // ============ implementation ============
@@ -132,6 +146,9 @@ std::uint32_t BPlusTreeT<Key, Comparator>::create() {//创建B+树
     h.next = std::numeric_limits<std::uint32_t>::max(); h.leftmost = std::numeric_limits<std::uint32_t>::max();
     buffer_.unpin_page(root, true);//脏页写回
     root_ = root;//全局变量root_为根索引
+    if (trace_) {
+        std::cout << "[B+Tree] create new tree with root page " << root_ << "\n";
+    }
     return root_;
 }
 
@@ -139,10 +156,16 @@ template <typename Key, typename Comparator>
 std::uint32_t BPlusTreeT<Key, Comparator>::find_leaf(const Key& key) const {
     //找到key所在的子叶
     std::uint32_t pid = root_;
+    if (trace_) {
+        std::cout << "[B+Tree] find_leaf(" << key << ") start at root " << pid << "\n";
+    }
     while (true) {
         Page& p = const_cast<BufferManager&>(buffer_).get_page(pid);
         const auto& h = hdr(p);
         if (h.is_leaf) {
+            if (trace_) {
+                std::cout << "[B+Tree] reached leaf page " << pid << " (count=" << h.count << ")\n";
+            }
             const_cast<BufferManager&>(buffer_).unpin_page(pid, false);
             return pid;
         }
@@ -150,8 +173,14 @@ std::uint32_t BPlusTreeT<Key, Comparator>::find_leaf(const Key& key) const {
         std::uint32_t child;
         if (idx < 0) {
             child = h.leftmost;
+            if (trace_) {
+                std::cout << "[B+Tree] internal page " << pid << ": go leftmost -> " << child << "\n";
+            }
         } else {
             child = inter_entries(p)[idx].child;
+            if (trace_) {
+                std::cout << "[B+Tree] internal page " << pid << ": descend to child at idx=" << idx << " -> " << child << "\n";
+            }
         }
         const_cast<BufferManager&>(buffer_).unpin_page(pid, false);
         pid = child;
@@ -195,6 +224,12 @@ bool BPlusTreeT<Key, Comparator>::search(const Key& key, RID& out) const {
         const auto& e = leaf_entries(p)[i];
         out.page_id = e.page_id;
         out.slot_id = e.slot_id;
+        if (trace_) {
+            std::cout << "[B+Tree] search(" << key << ") found at leaf " << leaf_id << ", pos " << i
+                      << ": RID(" << out.page_id << "," << out.slot_id << ")\n";
+        }
+    } else if (trace_) {
+        std::cout << "[B+Tree] search(" << key << ") not found in leaf " << leaf_id << "\n";
     }
     const_cast<BufferManager&>(buffer_).unpin_page(leaf_id, false);
     return ok;
@@ -236,7 +271,13 @@ bool BPlusTreeT<Key, Comparator>::insert(const Key& key, const RID& rid) {
     if (root_ == std::numeric_limits<std::uint32_t>::max()) create();
     std::uint32_t leaf_id = find_leaf(key);
     Page& leaf = buffer_.get_page(leaf_id);
+    if (trace_) {
+        std::cout << "[B+Tree] insert(" << key << ") into leaf " << leaf_id << "\n";
+    }
     if (insert_in_leaf(leaf, leaf_id, key, rid)) {//最简单的情况，直接插入
+        if (trace_) {
+            std::cout << "[B+Tree]  -> inserted without split\n";
+        }
         buffer_.unpin_page(leaf_id, true);
         return true;
     }
@@ -246,11 +287,17 @@ bool BPlusTreeT<Key, Comparator>::insert(const Key& key, const RID& rid) {
         int pos = leaf_lower_bound(leaf, key);
         const LeafEntry* es = leaf_entries(leaf);
         if (pos < h.count && eq(es[pos].key, key)) {//检查重复键
+            if (trace_) {
+                std::cout << "[B+Tree]  -> duplicate key, reject\n";
+            }
             buffer_.unpin_page(leaf_id, false);
             return false;
         }
     }
     // Need to split
+    if (trace_) {
+        std::cout << "[B+Tree]  -> leaf full, need split\n";
+    }
     split_leaf_and_insert(leaf, leaf_id, key, rid);
     buffer_.unpin_page(leaf_id, true);
     return true;
@@ -267,6 +314,9 @@ bool BPlusTreeT<Key, Comparator>::insert_in_leaf(Page& leaf, std::uint32_t /*lea
         for (int i = static_cast<int>(h.count); i > pos; --i) es[i] = es[i - 1];//从后往前移动，腾出 pos 位置
         es[pos].key = key; es[pos].page_id = rid.page_id; es[pos].slot_id = rid.slot_id;//插入
         h.count++;//增加项数
+        if (trace_) {
+            std::cout << "[B+Tree]     insert_in_leaf at pos=" << pos << ", new count=" << h.count << "\n";
+        }
         return true;
     }
     return false;
@@ -307,6 +357,10 @@ void BPlusTreeT<Key, Comparator>::split_leaf_and_insert(Page& leaf, std::uint32_
 
     // promote split key = first key in right
     Key sep = rs[0].key;//最小搜索码值
+    if (trace_) {
+        std::cout << "[B+Tree]     split leaf " << leaf_id << " -> new right " << right_id
+                  << ", sep key propagated\n";
+    }
     buffer_.unpin_page(right_id, true);
 
     insert_in_parent(leaf_id, sep, right_id);
@@ -321,6 +375,9 @@ bool BPlusTreeT<Key, Comparator>::insert_in_internal(Page& page, std::uint32_t /
         for (int i = static_cast<int>(h.count); i > pos; --i) es[i] = es[i - 1];
         es[pos].key = key; es[pos].child = right_id;
         h.count++;
+        if (trace_) {
+            std::cout << "[B+Tree]     insert_in_internal at pos=" << pos << ", new count=" << h.count << "\n";
+        }
         return true;
     }
     return false;
@@ -378,6 +435,10 @@ void BPlusTreeT<Key, Comparator>::split_internal_and_insert(Page& page, std::uin
         buffer_.unpin_page(child_id, true);
     }
 
+    if (trace_) {
+        std::cout << "[B+Tree]     split internal page " << pid << " -> new right " << right_pid
+                  << ", promote sep to parent\n";
+    }
     buffer_.unpin_page(right_pid, true);
 
     // link new right into parent
@@ -403,6 +464,9 @@ void BPlusTreeT<Key, Comparator>::insert_in_parent(std::uint32_t left_id, const 
         Page& r = buffer_.get_page(right_id); hdr(r).parent = new_root; buffer_.unpin_page(right_id, true);
 
         root_ = new_root;
+        if (trace_) {
+            std::cout << "[B+Tree]     new root " << root_ << " created with sep key\n";
+        }
         return;
     }
 
@@ -418,150 +482,45 @@ void BPlusTreeT<Key, Comparator>::insert_in_parent(std::uint32_t left_id, const 
         buffer_.unpin_page(right_id, true);
     }
 
-    // insert into parent
+    // try simple insert in parent
     Page& parent = buffer_.get_page(parent_id);
-    bool ok = insert_in_internal(parent, parent_id, key, right_id);
-    if (ok) {
-        buffer_.unpin_page(parent_id, true); // 已直接插入父页，标记为脏并释放
-    } else {
-        // 不要在分裂前释放父页引用，保持 pin 状态，避免使用悬空引用
-        split_internal_and_insert(parent, parent_id, key, right_id);
-        buffer_.unpin_page(parent_id, true); // 分裂完成后再释放父页
+    if (insert_in_internal(parent, parent_id, key, right_id)) {
+        buffer_.unpin_page(parent_id, true);
+        if (trace_) {
+            std::cout << "[B+Tree]     inserted sep into parent " << parent_id << " without split\n";
+        }
+        return;
     }
+
+    // Need to split parent
+    if (trace_) {
+        std::cout << "[B+Tree]     parent " << parent_id << " full, split needed\n";
+    }
+    split_internal_and_insert(parent, parent_id, key, right_id);
+    buffer_.unpin_page(parent_id, true);
 }
-
-// Default alias for backward compatibility: int64 keys
-using BPlusTree = BPlusTreeT<std::int64_t, std::less<std::int64_t>>;
-
-// } // namespace pcsql  // moved to file end
 
 template <typename Key, typename Comparator>
 bool BPlusTreeT<Key, Comparator>::erase(const Key& key) {
-    if (root_ == std::numeric_limits<std::uint32_t>::max()) return false;
-    std::uint32_t leaf_id = find_leaf(key);
-    Page& leaf = buffer_.get_page(leaf_id);
-    auto& lh = hdr(leaf);
-    if (!lh.is_leaf) { buffer_.unpin_page(leaf_id, false); return false; }
-    LeafEntry* les = leaf_entries(leaf);
-    int pos = leaf_lower_bound(leaf, key);
-    if (pos >= lh.count || !eq(les[pos].key, key)) {
-        buffer_.unpin_page(leaf_id, false);
-        return false;
-    }
-
-    // delete entry by shift-left
-    for (int i = pos + 1; i < lh.count; ++i) les[i - 1] = les[i];
-    lh.count--;
-
-    if (lh.count > 0) {
-        // if first key changed, update parent's separator
-        if (pos == 0) {
-            std::uint32_t parent_id = lh.parent;
-            if (parent_id != std::numeric_limits<std::uint32_t>::max()) {
-                Page& parent = buffer_.get_page(parent_id);
-                int slot = find_child_slot(parent, leaf_id);
-                if (slot > 0) { // separator key is at slot-1
-                    InterEntry* es = inter_entries(parent);
-                    es[slot - 1].key = les[0].key;
-                    buffer_.unpin_page(parent_id, true);
-                } else {
-                    buffer_.unpin_page(parent_id, false);
-                }
-            }
-        }
-        buffer_.unpin_page(leaf_id, true);
-        return true;
-    }
-
-    // leaf becomes empty
-    if (leaf_id == root_) {
-        // keep an empty leaf as root (simpler)
-        buffer_.unpin_page(leaf_id, true);
-        return true;
-    }
-
-    // Need to remove this empty leaf and fix parent/leaf-links
-    std::uint32_t parent_id = lh.parent;
-    std::uint32_t next_id = lh.next;
-
-    // Pin parent to compute siblings and adjust
-    Page& parent = buffer_.get_page(parent_id);
-    auto& ph = hdr(parent);
-    // build children array to locate slot and siblings
-    int child_slot = find_child_slot(parent, leaf_id);
-    // compute left sibling id if any
-    std::uint32_t left_id = std::numeric_limits<std::uint32_t>::max();
-    if (child_slot > 0) {
-        if (child_slot - 1 == 0) {
-            left_id = ph.leftmost;
-        } else {
-            left_id = inter_entries(parent)[child_slot - 2].child;
-        }
-    }
-
-    // update left sibling's next to skip removed leaf
-    if (left_id != std::numeric_limits<std::uint32_t>::max()) {
-        Page& leftp = buffer_.get_page(left_id);
-        hdr(leftp).next = next_id;
-        buffer_.unpin_page(left_id, true);
-    }
-
-    // Unpin the leaf before freeing it
-    buffer_.unpin_page(leaf_id, false);
-    disk_.free_page(leaf_id);
-
-    // remove this child from parent and possibly shrink root
-    remove_child_at(parent, parent_id, child_slot);
-    // remove_child_at handles unpin of parent and possible root change
-
-    return true;
+    // NOTE: deletion is not fully implemented in this simplified educational version
+    // You can extend this in the future.
+    (void)key;
+    return false;
 }
 
 template <typename Key, typename Comparator>
 void BPlusTreeT<Key, Comparator>::remove_child_at(Page& parent, std::uint32_t parent_id, int child_slot) {
     auto& h = hdr(parent);
     InterEntry* es = inter_entries(parent);
-
-    // Build children array lazily when needed to fetch right sibling for k==0
-    if (child_slot < 0 || child_slot > h.count) {
-        buffer_.unpin_page(parent_id, false);
-        return;
-    }
-
     if (child_slot == 0) {
-        // remove leftmost child => update leftmost to previous children[1]
-        // children[1] is es[0].child when count>0
-        std::uint32_t new_leftmost = (h.count > 0) ? es[0].child : std::numeric_limits<std::uint32_t>::max();
-        h.leftmost = new_leftmost;
-        // remove key at index 0 by shifting
-        for (int i = 1; i < h.count; ++i) es[i - 1] = es[i];
-        if (h.count > 0) h.count--;
+        h.leftmost = es[0].child;
+        for (int i = 0; i < h.count - 1; ++i) es[i] = es[i + 1];
     } else {
-        // remove key at index child_slot-1 by shifting left
-        for (int i = child_slot; i < h.count; ++i) es[i - 1] = es[i];
-        h.count--;
+        for (int i = child_slot - 1; i < h.count - 1; ++i) es[i] = es[i + 1];
     }
-
-    // If parent is root and becomes empty, shrink tree height
-    if (parent_id == root_ && h.count == 0) {
-        std::uint32_t new_root = h.leftmost;
-        buffer_.unpin_page(parent_id, true);
-        if (new_root != std::numeric_limits<std::uint32_t>::max()) {
-            Page& nr = buffer_.get_page(new_root);
-            hdr(nr).parent = std::numeric_limits<std::uint32_t>::max();
-            buffer_.unpin_page(new_root, true);
-        }
-        disk_.free_page(parent_id);
-        root_ = new_root;
-        return;
-    }
-
-    buffer_.unpin_page(parent_id, true);
+    h.count--;
 }
 
-// find index k in parent's children array where children[k] == child_id
-// children[0] = leftmost; children[i+1] = es[i].child
-// returns -1 if not found
 template <typename Key, typename Comparator>
 int BPlusTreeT<Key, Comparator>::find_child_slot(const Page& parent, std::uint32_t child_id) const {
     const auto& h = hdr(parent);
@@ -572,5 +531,7 @@ int BPlusTreeT<Key, Comparator>::find_child_slot(const Page& parent, std::uint32
     }
     return -1;
 }
+
+using BPlusTree = BPlusTreeT<std::int64_t, std::less<std::int64_t>>;
 
 } // namespace pcsql

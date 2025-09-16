@@ -33,7 +33,7 @@ TableSchema SemanticAnalyzer::loadSchemaFromSys(const std::string& tableName) co
 // 重要：语义分析入口
 void SemanticAnalyzer::analyze(const std::unique_ptr<ASTNode>& ast, const std::vector<Token>& tokens) {
     if (!ast) {
-        throw std::runtime_error("Semantic analysis error: AST is empty.");
+        throw std::runtime_error("[语义, (line 0, column 0), AST is empty]");
     }
     std::cout << "Starting semantic analysis..." << std::endl;
     try {
@@ -52,7 +52,7 @@ void SemanticAnalyzer::analyze(const std::unique_ptr<ASTNode>& ast, const std::v
         } else if (auto dropTableStmt = dynamic_cast<DropTableStatement*>(ast.get())) {
             visit(dropTableStmt, tokens);
         } else {
-            throw std::runtime_error("Semantic analysis error: Unsupported AST node type.");
+            throw std::runtime_error("[语义, (line 0, column 0), Unsupported AST node type]");
         }
         std::cout << "Semantic analysis successful." << std::endl;
     } catch (const std::runtime_error& e) {
@@ -104,7 +104,7 @@ void SemanticAnalyzer::visit(InsertStatement* node, const std::vector<Token>& to
     const auto schema = loadSchemaFromSys(node->tableName);
     if (schema.columns.size() != node->values.size()) {
         std::stringstream ss;
-        ss << "Semantic Error: Number of values (" << node->values.size()
+        ss << "Number of values (" << node->values.size()
            << ") does not match the number of columns (" << schema.columns.size()
            << ") in table '" << node->tableName << "'.";
         reportError(ss.str(), node->tableTokenIndex, tokens);
@@ -120,7 +120,7 @@ void SemanticAnalyzer::visit(InsertStatement* node, const std::vector<Token>& to
         if (column.type == DataType::TIMESTAMP && lv == "current_timestamp") {
             continue; // will be evaluated at execution time
         }
-        checkValueType(value, column.type);
+        checkValueType(value, column.type, node->tableTokenIndex, tokens);
     }
     // 完整性约束检查（NOT NULL / UNIQUE / PRIMARY KEY）
     checkConstraintsOnInsert(node->tableName, schema, node->values, node->tableTokenIndex, tokens);
@@ -148,7 +148,7 @@ void SemanticAnalyzer::visit(UpdateStatement* node, const std::vector<Token>& to
             reportError("Column '" + column + "' does not exist in table '" + node->tableName + "'.", node->tableTokenIndex, tokens);
         }
         DataType expectedType = it->second;
-        checkValueType(value, expectedType);
+        checkValueType(value, expectedType, node->tableTokenIndex, tokens);
     }
     checkWhereClause(dynamic_cast<WhereClause*>(node->whereClause.get()), node->tableName, tokens);
     // 完整性约束（基础版）：禁止将 NOT NULL/PRIMARY 列更新为 NULL；对 UNIQUE/PRIMARY 做基本重复值检查
@@ -167,15 +167,15 @@ void SemanticAnalyzer::visit(DropTableStatement* node, const std::vector<Token>&
     }
 }
 
-void SemanticAnalyzer::checkValueType(const std::string& value, DataType expectedType) {
+void SemanticAnalyzer::checkValueType(const std::string& value, DataType expectedType, size_t tokenIndex, const std::vector<Token>& tokens) {
     if (expectedType == DataType::INT) {
         bool isNumber = !value.empty() && std::all_of(value.begin(), value.end(), ::isdigit);
         if (!isNumber) {
-            throw std::runtime_error("Semantic Error: Type mismatch. Expected INT, but got '" + value + "'.");
+            reportError("Type mismatch. Expected INT, but got '" + value + "'.", tokenIndex, tokens);
         }
     } else if (expectedType == DataType::DOUBLE) {
         try { (void)std::stod(value); }
-        catch (...) { throw std::runtime_error("Semantic Error: Type mismatch. Expected DOUBLE, but got '" + value + "'."); }
+        catch (...) { reportError("Type mismatch. Expected DOUBLE, but got '" + value + "'.", tokenIndex, tokens); }
     }
 }
 
@@ -203,7 +203,7 @@ void SemanticAnalyzer::checkWhereClause(WhereClause* whereClause, const std::str
 void SemanticAnalyzer::reportError(const std::string& message, size_t tokenIndex, const std::vector<Token>& tokens) {
     size_t line = 0; size_t column = 0;
     if (tokenIndex < tokens.size()) { line = tokens[tokenIndex].line; column = tokens[tokenIndex].column; }
-    std::stringstream ss; ss << "Semantic Error: " << message << " at line " << line << ", column " << column << ".";
+    std::stringstream ss; ss << "[语义, (line " << line << ", column " << column << "), " << message << "]";
     throw std::runtime_error(ss.str());
 }
 void SemanticAnalyzer::visit(CreateIndexStatement* node, const std::vector<Token>& tokens) {

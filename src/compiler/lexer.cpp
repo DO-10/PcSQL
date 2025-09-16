@@ -150,10 +150,10 @@ Token Lexer::getNextToken() {
                 advance();
                 return {TokenType::OPERATOR, "!=", start_line, start_column};
             }
-            // 抛出带有位置信息的错误
+            // 抛出带有位置信息的错误（结构化格式）
             {
                 std::stringstream ss;
-                ss << "Unknown operator: " << current_char << " at line " << start_line << ", column " << start_column;
+                ss << "[词法, (line " << start_line << ", column " << start_column << "), Unknown operator '!']";
                 throw std::runtime_error(ss.str());
             }
             
@@ -169,10 +169,10 @@ Token Lexer::getNextToken() {
         case ':': advance(); return {TokenType::DELIMITER, ":", start_line, start_column};
 
         default:
-            // 抛出带有位置信息的错误
+            // 抛出带有位置信息的错误（结构化格式）
             {
                 std::stringstream ss;
-                ss << "Unknown character: '" << current_char << "' at line " << start_line << ", column " << start_column;
+                ss << "[词法, (line " << start_line << ", column " << start_column << "), Unknown character '" << current_char << "']";
                 throw std::runtime_error(ss.str());
             }
     }
@@ -229,7 +229,7 @@ Token Lexer::getString() {
             advance(); // 跳过反斜杠
             if (pos_ >= text_.length()) {
                 std::stringstream ss;
-                ss << "Unterminated escape sequence at line " << start_line << ", column " << start_column;
+                ss << "[词法, (line " << start_line << ", column " << start_column << "), Unterminated escape sequence]";
                 throw std::runtime_error(ss.str());
             }
             char esc = currentChar();
@@ -248,7 +248,7 @@ Token Lexer::getString() {
     }
     if (pos_ >= text_.length()) {
         std::stringstream ss;
-        ss << "Unterminated string literal at line " << start_line << ", column " << start_column;
+        ss << "[词法, (line " << start_line << ", column " << start_column << "), Unterminated string literal]";
         throw std::runtime_error(ss.str());
     }
     advance(); // 跳过结束的单引号

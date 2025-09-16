@@ -34,6 +34,38 @@ static std::string join(const std::vector<std::string>& v, const char* sep) {
     return os.str();
 }
 
+// 辅助：在 FixedString<128> 的按字节字典序（memcmp）及零填充语义下，计算严格小于/大于给定字符串的边界哨兵
+static std::string fixed_key_floor_before(const std::string& s, std::size_t N = 128) {
+    std::string buf(N, '\0');
+    std::size_t m = std::min(s.size(), N);
+    for (std::size_t i = 0; i < m; ++i) buf[i] = s[i];
+    // trailing 默认是 0x00；寻找从后往前第一个 > 0x00 的字节，减一并把后续置为 0xFF
+    for (int i = static_cast<int>(N) - 1; i >= 0; --i) {
+        unsigned char b = static_cast<unsigned char>(buf[static_cast<std::size_t>(i)]);
+        if (b > 0x00) {
+            buf[static_cast<std::size_t>(i)] = static_cast<char>(b - 1);
+            for (std::size_t j = static_cast<std::size_t>(i) + 1; j < N; ++j) buf[j] = static_cast<char>(0xFF);
+            return buf; // 长度为 N 的严格小于 s 的最大键
+        }
+    }
+    return std::string(); // 不存在前驱（s 为全 0）
+}
+
+static std::string fixed_key_ceil_after(const std::string& s, std::size_t N = 128) {
+    std::string buf(N, '\0');
+    std::size_t m = std::min(s.size(), N);
+    for (std::size_t i = 0; i < m; ++i) buf[i] = s[i];
+    // trailing 默认是 0x00；寻找从后往前第一个 < 0xFF 的字节，加一并把后续置为 0x00
+    for (int i = static_cast<int>(N) - 1; i >= 0; --i) {
+        unsigned char b = static_cast<unsigned char>(buf[static_cast<std::size_t>(i)]);
+        if (b < 0xFF) {
+            buf[static_cast<std::size_t>(i)] = static_cast<char>(b + 1);
+            for (std::size_t j = static_cast<std::size_t>(i) + 1; j < N; ++j) buf[j] = '\0';
+            return buf; // 长度为 N 的严格大于 s 的最小键
+        }
+    }
+    return std::string(); // 不存在后继（已是全 0xFF）
+}
 static bool parse_condition(const std::string& cond, std::string& col, std::string& op, std::string& val) {
     std::string s = trim(cond);
     const char* ops[] = {">=", "<=", "!=", "=", ">", "<"};
@@ -65,8 +97,20 @@ static bool compare_typed(DataType type, const std::string& l, const std::string
             case DataType::INT: { long long li = std::stoll(l); long long ri = std::stoll(r); c = cmp(li, ri); break; }
             case DataType::DOUBLE: { double ld = std::stod(l); double rd = std::stod(r); c = cmp(ld, rd); break; }
             case DataType::BOOLEAN: { bool lb = to_bool_ci(l); bool rb = to_bool_ci(r); c = cmp(lb, rb); break; }
-            case DataType::TIMESTAMP:
-            case DataType::VARCHAR:
+            case DataType::TIMESTAMP: { c = cmp(l, r); break; }
+            case DataType::VARCHAR: {
+                // 防御式处理：去除可能存在的包裹引号，保证与解析阶段一致
+                auto strip_quotes = [](std::string& s){
+                    if (s.size() >= 2 && ((s.front()=='\'' && s.back()=='\'') || (s.front()=='"' && s.back()=='"'))) {
+                        s = s.substr(1, s.size() - 2);
+                    }
+                };
+                std::string ls = l, rs = r;
+                strip_quotes(ls);
+                strip_quotes(rs);
+                c = cmp(ls, rs);
+                break;
+            }
             default: { c = cmp(l, r); break; }
         }
     } catch (...) {
@@ -216,14 +260,24 @@ std::string ExecutionEngine::handleInsert(InsertStatement* stmt) {
     return os.str();
 }
 
-std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
-    int tid = storage_.get_table_id(to_lower(stmt->fromTable));
-    if (tid < 0) return "Table not found: " + stmt->fromTable;
+std::vector<std::pair<pcsql::RID, std::string>> ExecutionEngine::selectRows(SelectStatement* stmt) {
+    std::vector<std::pair<pcsql::RID, std::string>> rows;
+    buildSelectRows(stmt, rows, nullptr);
+    return rows;
+}
 
-    // Diagnostics to describe the query process
+bool ExecutionEngine::buildSelectRows(SelectStatement* stmt,
+                         std::vector<std::pair<pcsql::RID, std::string>>& rows_out,
+                         std::string* debug_out) {
+    int tid = storage_.get_table_id(to_lower(stmt->fromTable));
+    if (tid < 0) {
+        rows_out.clear();
+        if (debug_out) *debug_out = std::string("Table not found: ") + stmt->fromTable;
+        return false;
+    }
+
     std::vector<std::string> diag;
 
-    // Try index path first; now supports INT equality and range operators
     std::vector<std::pair<pcsql::RID, std::string>> rows;
     bool used_index = false;
     std::string strategy = "full_scan";
@@ -243,7 +297,6 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                     diag.push_back("WHERE column index: " + std::to_string(where_col_idx) + ", type: " + std::to_string(static_cast<int>(where_dtype)));
                 }
                 if (where_col_idx >= 0 && where_dtype == DataType::INT) {
-                    // Check index existence on this column
                     auto idxs = storage_.get_table_indexes(tid);
                     bool has_idx = false;
                     for (const auto& idx : idxs) { if (idx.column_index == where_col_idx) { has_idx = true; break; } }
@@ -260,10 +313,8 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                                 long long high = std::numeric_limits<long long>::max();
                                 if (parsed_op == ">") {
                                     if (v == std::numeric_limits<long long>::max()) {
-                                        // empty
                                         rows.clear(); used_index = true; strategy = "index_range(> empty)";
                                     } else {
-                                        // use [v, +inf], rely on post WHERE filter to drop equality
                                         low = v; // [v, +inf]
                                         rows = storage_.index_select_range_int(tid, where_col_idx, low, high);
                                         used_index = true; strategy = "index_range(>)";
@@ -276,7 +327,6 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                                     if (v == std::numeric_limits<long long>::min()) {
                                         rows.clear(); used_index = true; strategy = "index_range(< empty)";
                                     } else {
-                                        // use [-inf, v], rely on post WHERE filter to drop equality
                                         high = v; // [-inf, v]
                                         rows = storage_.index_select_range_int(tid, where_col_idx, low, high);
                                         used_index = true; strategy = "index_range(<)";
@@ -290,7 +340,6 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                                     diag.push_back("Range low/high used: [" + std::to_string(low) + ", " + std::to_string(high) + "]");
                                 }
                             } else if (parsed_op == "!=") {
-                                // Use two ranges: (-inf, v] U [v, +inf) and rely on post-filter to drop equality
                                 std::vector<std::pair<pcsql::RID, std::string>> left, right;
                                 if (v != std::numeric_limits<long long>::min()) {
                                     long long high = v; // include v (will be filtered out)
@@ -306,20 +355,18 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                                 used_index = true; strategy = "index_range(!= as two ranges)";
                             }
                         } catch (...) {
-                            // fall back to full scan if cannot parse integer
                             diag.push_back("WHERE value not integer, fall back to scan");
                         }
                     }
                 } else if (where_col_idx >= 0 && where_dtype == DataType::VARCHAR) {
-                    // VARCHAR index path
                     auto idxs = storage_.get_table_indexes(tid);
                     bool has_idx = false;
                     for (const auto& idx : idxs) { if (idx.column_index == where_col_idx) { has_idx = true; break; } }
                     diag.push_back(std::string("Index exists on column: ") + (has_idx ? "yes" : "no"));
                     if (has_idx) {
                         const std::string& v = parsed_val;
-                        const std::string minStr = ""; // minimal sentinel
-                        const std::string maxStr(128, static_cast<char>(0xFF)); // maximal sentinel for FixedString<128>
+                        const std::string minStr = "";
+                        const std::string maxStr(128, static_cast<char>(0xFF));
                         if (parsed_op == "=") {
                             rows = storage_.index_select_eq_varchar(tid, where_col_idx, v);
                             used_index = true; strategy = "index_eq(varchar)";
@@ -327,7 +374,6 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                             std::string low = minStr;
                             std::string high = maxStr;
                             if (parsed_op == ">") {
-                                // use [v, +inf] and rely on post-filter to drop equality
                                 low = v; // [v, +inf]
                                 rows = storage_.index_select_range_varchar(tid, where_col_idx, low, high);
                                 used_index = true; strategy = "index_range(> varchar)";
@@ -336,7 +382,6 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                                 rows = storage_.index_select_range_varchar(tid, where_col_idx, low, high);
                                 used_index = true; strategy = "index_range(>= varchar)";
                             } else if (parsed_op == "<") {
-                                // use [-inf, v] and rely on post-filter to drop equality
                                 high = v; // [-inf, v]
                                 rows = storage_.index_select_range_varchar(tid, where_col_idx, low, high);
                                 used_index = true; strategy = "index_range(< varchar)";
@@ -349,13 +394,19 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                                 diag.push_back(std::string("Range low/high used (varchar): [") + low + ", " + (high == maxStr ? "MAX" : high) + "]");
                             }
                         } else if (parsed_op == "!=") {
-                            // two ranges: [-inf, v] and [v, +inf], rely on post-filter to drop equality
-                            auto left = storage_.index_select_range_varchar(tid, where_col_idx, minStr, v);
-                            auto right = storage_.index_select_range_varchar(tid, where_col_idx, v, maxStr);
+                            std::string lo2 = fixed_key_ceil_after(v);
+                            std::string hi1 = fixed_key_floor_before(v);
+                            std::vector<std::pair<pcsql::RID, std::string>> left, right;
+                            if (!hi1.empty()) {
+                                left = storage_.index_select_range_varchar(tid, where_col_idx, minStr, hi1);
+                            }
+                            if (!lo2.empty()) {
+                                right = storage_.index_select_range_varchar(tid, where_col_idx, lo2, maxStr);
+                            }
                             rows.reserve(left.size() + right.size());
                             rows.insert(rows.end(), left.begin(), left.end());
                             rows.insert(rows.end(), right.begin(), right.end());
-                            used_index = true; strategy = "index_range(!= varchar as two ranges)";
+                            used_index = true; strategy = "index_range(!= varchar open)";
                         }
                     }
                 }
@@ -371,7 +422,6 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
     }
     diag.push_back(std::string("Index hit: ") + (used_index ? "true" : "false") + ", strategy: " + strategy + ", candidates: " + std::to_string(rows.size()));
 
-    // Apply WHERE filtering on the working set (for correctness)
     if (stmt->whereClause) {
         if (auto* where = dynamic_cast<WhereClause*>(stmt->whereClause.get())) {
             std::string col, op, val;
@@ -383,6 +433,7 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                     if (to_lower(schema.columns[i].name) == col_lc) { idx = static_cast<int>(i); dtype = schema.columns[i].type; break; }
                 }
                 if (idx >= 0) {
+                    size_t before = rows.size();
                     std::vector<std::pair<pcsql::RID, std::string>> filtered;
                     filtered.reserve(rows.size());
                     for (const auto& kv : rows) {
@@ -393,6 +444,7 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
                         }
                     }
                     rows.swap(filtered);
+                    diag.push_back("After WHERE filter: " + std::to_string(rows.size()) + " (before=" + std::to_string(before) + ")");
                 }
             }
         }
@@ -400,9 +452,27 @@ std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
 
     diag.push_back("Final rows: " + std::to_string(rows.size()));
 
+    rows_out.swap(rows);
+    if (debug_out) {
+        std::ostringstream oss;
+        for (const auto& ln : diag) oss << ln << "\n";
+        *debug_out = oss.str();
+    }
+    return true;
+}
+
+std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
+    std::vector<std::pair<pcsql::RID, std::string>> rows;
+    std::string debug;
+    buildSelectRows(stmt, rows, &debug);
+
     std::ostringstream os;
     os << "SELECT " << join(stmt->columns, ",") << " FROM " << stmt->fromTable << "\n";
-    for (const auto& ln : diag) os << "[QUERY] " << ln << "\n";
+    if (!debug.empty()) {
+        std::istringstream iss(debug);
+        std::string line;
+        while (std::getline(iss, line)) os << "[QUERY] " << line << "\n";
+    }
     os << format_rows(rows);
     return os.str();
 }

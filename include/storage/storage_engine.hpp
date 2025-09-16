@@ -39,6 +39,9 @@ public:
         }
     }
 
+    // Toggle index tracing (forwarded to B+Tree internally)
+    void set_index_trace(bool on) { index_trace_ = on; }
+
     // Disk-level page operations
     std::uint32_t allocate_page() { return disk_.allocate_page(); }
     void free_page(std::uint32_t pid) { return disk_.free_page(pid); }
@@ -105,6 +108,7 @@ public:
 
     std::int32_t get_table_id(const std::string& name) const { return tables_.get_table_id(name); }
     std::string get_table_name(std::int32_t tid) const { return tables_.get_table_name(tid); }
+    // FIX: call correct TableManager API
     std::uint32_t allocate_table_page(std::int32_t tid) { return tables_.allocate_table_page(tid, disk_); }
     const std::vector<std::uint32_t>& get_table_pages(std::int32_t tid) const { return tables_.get_table_pages(tid); }
 
@@ -145,35 +149,25 @@ public:
                 if (fields.size() >= 6) {
                     // new format with length
                     try { cm.length = static_cast<std::size_t>(std::stoul(fields[4])); } catch (...) { cm.length = 0; }
-                    if (!fields[5].empty()) {
-                        std::istringstream css(fields[5]);
-                        std::string c;
-                        while (std::getline(css, c, ',')) cm.constraints.push_back(c);
-                    }
+                    // constraints list separated by ','
+                    for (const auto& c : split(fields[5], ',')) if (!c.empty()) cm.constraints.push_back(c);
                 } else if (fields.size() >= 5) {
-                    // legacy: attempt to parse length; if not numeric, treat as constraints
-                    bool parsed_len = false;
-                    try {
-                        std::size_t len = static_cast<std::size_t>(std::stoul(fields[4]));
-                        cm.length = len;
-                        parsed_len = true;
-                    } catch (...) { /* not a length */ }
-                    if (!parsed_len && !fields[4].empty()) {
-                        std::istringstream css(fields[4]);
-                        std::string c;
-                        while (std::getline(css, c, ',')) cm.constraints.push_back(c);
-                    }
+                    // legacy: constraints without length
+                    for (const auto& c : split(fields[4], ',')) if (!c.empty()) cm.constraints.push_back(c);
                 }
                 cols.emplace_back(col_idx, std::move(cm));
-            } catch (...) { /* ignore parse errors */ }
+            } catch (...) {
+                // ignore
+            }
         }
-        std::sort(cols.begin(), cols.end(), [](const auto& a, const auto& b){ return a.first < b.first; });
-        schema.columns.clear();
-        schema.columns.reserve(cols.size());
-        schema.columnTypes.clear();
-        for (auto& p : cols) {
-            schema.columnTypes[to_lower(p.second.name)] = p.second.type;
-            schema.columns.push_back(std::move(p.second));
+        if (!cols.empty()) {
+            std::sort(cols.begin(), cols.end(), [](const auto& a, const auto& b){ return a.first < b.first; });
+            schema.columns.clear();
+            schema.columnTypes.clear();
+            for (const auto& kv : cols) {
+                schema.columns.push_back(kv.second);
+                schema.columnTypes[to_lower(kv.second.name)] = kv.second.type;
+            }
         }
         return schema;
     }
@@ -208,8 +202,13 @@ public:
         if (col_idx < 0) throw std::runtime_error("Column not found: " + column_name);
         // Build B+Tree depending on column type
         std::uint32_t root = 0;
+        std::cout << "[StorageEngine] Building index '" << index_name << "' on "
+                  << to_lower(table_name) << "(" << to_lower(column_name) << ") type="
+                  << (dtype == DataType::INT ? "INT" : (dtype == DataType::VARCHAR ? "VARCHAR" : "OTHER"))
+                  << std::endl;
         if (dtype == DataType::INT) {
             BPlusTree tree(disk_, buffer_);
+            tree.set_trace(index_trace_);
             root = tree.create();
             // insert existing rows
             auto rows = scan_table(tid);
@@ -230,6 +229,7 @@ public:
             // Use fixed-size key for VARCHAR index
             using StrKey = FixedString<128>;
             BPlusTreeT<StrKey> tree(disk_, buffer_);
+            tree.set_trace(index_trace_);
             root = tree.create();
             // insert existing rows
             auto rows = scan_table(tid);
@@ -248,6 +248,7 @@ public:
         } else {
             throw std::runtime_error("Only INT/VARCHAR column is supported for index currently");
         }
+        std::cout << "[StorageEngine] Index '" << index_name << "' built, root page id=" << root << std::endl;
         // persist index metadata
         insert_into_sys_indexes(index_name, tid, to_lower(column_name), unique, root);
         return true;
@@ -301,6 +302,7 @@ public:
                 long long key_ll = 0; try { key_ll = std::stoll(fields[idx.column_index]); } catch (...) { continue; }
                 BPlusTree tree(disk_, buffer_);
                 tree.open(idx.root);
+                tree.set_trace(index_trace_);
                 bool ok = tree.insert(static_cast<std::int64_t>(key_ll), rid);
                 if (!ok && idx.unique) {
                     std::cerr << "[StorageEngine] UNIQUE index violation on '" << idx.name << "' for key=" << key_ll << std::endl;
@@ -309,6 +311,7 @@ public:
                 using StrKey = FixedString<128>;
                 BPlusTreeT<StrKey> tree(disk_, buffer_);
                 tree.open(idx.root);
+                tree.set_trace(index_trace_);
                 StrKey key(fields[idx.column_index]);
                 bool ok = tree.insert(key, rid);
                 if (!ok && idx.unique) {
@@ -328,8 +331,12 @@ public:
         const IndexInfo* found = nullptr;
         for (const auto& idx : idxs) { if (idx.column_index == column_index) { found = &idx; break; } }
         if (!found) return out;
+        if (index_trace_) {
+            std::cout << "[StorageEngine] Index search EQ on table_id=" << table_id << ", column_index=" << column_index << ", key=" << key << std::endl;
+        }
         BPlusTree tree(disk_, buffer_);
         tree.open(found->root);
+        tree.set_trace(index_trace_);
         RID rid; if (tree.search(static_cast<std::int64_t>(key), rid)) {
             std::string row; if (read_record(rid, row)) out.emplace_back(rid, std::move(row));
         }
@@ -343,8 +350,13 @@ public:
         const IndexInfo* found = nullptr;
         for (const auto& idx : idxs) { if (idx.column_index == column_index) { found = &idx; break; } }
         if (!found) return out;
+        if (index_trace_) {
+            std::cout << "[StorageEngine] Index range search on table_id=" << table_id << ", column_index=" << column_index
+                      << ", range=[" << low << ", " << high << "]" << std::endl;
+        }
         BPlusTree tree(disk_, buffer_);
         tree.open(found->root);
+        tree.set_trace(index_trace_);
         auto kvs = tree.range(static_cast<std::int64_t>(low), static_cast<std::int64_t>(high));
         out.reserve(kvs.size());
         for (const auto& kv : kvs) {
@@ -361,24 +373,36 @@ public:
         const IndexInfo* found = nullptr;
         for (const auto& idx : idxs) { if (idx.column_index == column_index) { found = &idx; break; } }
         if (!found) return out;
+        if (index_trace_) {
+            std::cout << "[StorageEngine] Index search EQ(varchar) on table_id=" << table_id << ", column_index=" << column_index << ", key='" << key << "'" << std::endl;
+        }
         using StrKey = FixedString<128>;
         BPlusTreeT<StrKey> tree(disk_, buffer_);
         tree.open(found->root);
+        tree.set_trace(index_trace_);
         RID rid; if (tree.search(StrKey(key), rid)) {
             std::string row; if (read_record(rid, row)) out.emplace_back(rid, std::move(row));
         }
         return out;
     }
 
+    // 新增：VARCHAR index-assisted range selection (inclusive)
     std::vector<std::pair<RID, std::string>> index_select_range_varchar(int table_id, int column_index, const std::string& low, const std::string& high) {
         std::vector<std::pair<RID, std::string>> out;
+        if (low > high) return out;
         auto idxs = get_table_indexes(table_id);
         const IndexInfo* found = nullptr;
         for (const auto& idx : idxs) { if (idx.column_index == column_index) { found = &idx; break; } }
         if (!found) return out;
+        if (index_trace_) {
+            std::cout << "[StorageEngine] Index range search (varchar) on table_id=" << table_id
+                      << ", column_index=" << column_index
+                      << ", range=['" << low << "', '" << high << "']" << std::endl;
+        }
         using StrKey = FixedString<128>;
         BPlusTreeT<StrKey> tree(disk_, buffer_);
         tree.open(found->root);
+        tree.set_trace(index_trace_);
         auto kvs = tree.range(StrKey(low), StrKey(high));
         out.reserve(kvs.size());
         for (const auto& kv : kvs) {
@@ -395,8 +419,8 @@ private:
         return s;
     }
     static inline bool is_system_table(const std::string& name) {
-        std::string n = to_lower(name);
-        return n == "sys_tables" || n == "sys_columns" || n == "sys_indexes" || n == "sys_users";
+        auto n = to_lower(name);
+        return (n == "sys_tables" || n == "sys_columns" || n == "sys_indexes" || n == "sys_users");
     }
     static inline std::string type_to_string(DataType t) {
         switch (t) {
@@ -412,127 +436,81 @@ private:
         std::ostringstream os; for (size_t i=0;i<v.size();++i){ if(i) os<<sep; os<<v[i]; } return os.str();
     }
     static inline std::vector<std::string> split(const std::string& s, char delim) {
-        std::vector<std::string> out; std::string cur; std::istringstream iss(s);
-        while (std::getline(iss, cur, delim)) out.push_back(cur);
-        return out;
+        std::vector<std::string> out; std::string cur; std::istringstream iss(s); while (std::getline(iss, cur, delim)) out.push_back(cur); return out;
     }
-
     void ensure_system_catalog() {
-        // Define schemas
-        std::vector<ColumnMetadata> t_cols = {
-            {"id", DataType::INT, {}},
-            {"name", DataType::VARCHAR, {}}
-        };
-        std::vector<ColumnMetadata> c_cols = {
-            {"table_id", DataType::INT, {}},
-            {"col_index", DataType::INT, {}},
-            {"name", DataType::VARCHAR, {}},
-            {"type", DataType::VARCHAR, {}},
-            {"constraints", DataType::VARCHAR, {}}
-        };
-        std::vector<ColumnMetadata> i_cols = {
-            {"index_name", DataType::VARCHAR, {}},
-            {"table_id", DataType::INT, {}},
-            {"column", DataType::VARCHAR, {}},
-            {"unique", DataType::BOOLEAN, {}},
-            {"root", DataType::INT, {}}
-        };
-        std::vector<ColumnMetadata> u_cols = {
-            {"user", DataType::VARCHAR, {}},
-            {"password", DataType::VARCHAR, {}}
-        };
-
-        // Create sys tables if not exist (create physical tables directly)
+        // Create system tables if not exist
         if (tables_.get_table_id("sys_tables") < 0) {
-            (void)tables_.create_table("sys_tables");
+            tables_.create_table("sys_tables");
         }
         if (tables_.get_table_id("sys_columns") < 0) {
-            (void)tables_.create_table("sys_columns");
+            tables_.create_table("sys_columns");
         }
         if (tables_.get_table_id("sys_indexes") < 0) {
-            (void)tables_.create_table("sys_indexes");
+            tables_.create_table("sys_indexes");
         }
         if (tables_.get_table_id("sys_users") < 0) {
-            (void)tables_.create_table("sys_users");
-        }
-
-        // Seed system tables' own metadata into sys_tables/sys_columns if empty
-        auto sys_tid = tables_.get_table_id("sys_tables");
-        auto sys_cid = tables_.get_table_id("sys_columns");
-        auto rows = records_.scan(sys_tid);
-        if (rows.empty()) {
-            int tid_tables = tables_.get_table_id("sys_tables");
-            int tid_columns = tables_.get_table_id("sys_columns");
-            int tid_indexes = tables_.get_table_id("sys_indexes");
-            int tid_users = tables_.get_table_id("sys_users");
-            // insert table entries
-            insert_into_sys_tables(tid_tables, "sys_tables");
-            insert_into_sys_tables(tid_columns, "sys_columns");
-            insert_into_sys_tables(tid_indexes, "sys_indexes");
-            insert_into_sys_tables(tid_users, "sys_users");
-            // insert column entries
-            insert_into_sys_columns(tid_tables, t_cols);
-            insert_into_sys_columns(tid_columns, c_cols);
-            insert_into_sys_columns(tid_indexes, i_cols);
-            insert_into_sys_columns(tid_users, u_cols);
-            // 关键：立即持久化，避免下次启动再次判空并重复自举
-            flush_all();
-            std::cout << "[StorageEngine] bootstrapped system catalog rows in sys_tables/sys_columns (flushed)" << std::endl;
+            tables_.create_table("sys_users");
         }
     }
 
     void insert_into_sys_tables(int tid, const std::string& name) {
-        // format: id|name
-        std::ostringstream os; os << tid << "|" << name;
         int sys_tid = tables_.get_table_id("sys_tables");
-        (void)records_.insert(sys_tid, os.str());
+        if (sys_tid < 0) return;
+        std::ostringstream os; os << tid << "|" << name;
+        records_.insert(sys_tid, os.str());
     }
-
     void insert_into_sys_columns(int tid, const std::vector<ColumnMetadata>& columns) {
         int sys_cid = tables_.get_table_id("sys_columns");
+        if (sys_cid < 0) return;
         for (size_t i = 0; i < columns.size(); ++i) {
             const auto& c = columns[i];
+            std::ostringstream cons; for (size_t j=0;j<c.constraints.size();++j){ if(j) cons << ','; cons << c.constraints[j]; }
             std::ostringstream os;
-            // format: table_id|col_index|name|type|length|constraints
-            os << tid << "|" << i << "|" << c.name << "|" << type_to_string(c.type) << "|" << c.length << "|" << join(c.constraints);
-            (void)records_.insert(sys_cid, os.str());
+            // table_id|col_index|name|type|length|constraints
+            os << tid << '|' << i << '|' << c.name << '|' << type_to_string(c.type) << '|' << c.length << '|' << cons.str();
+            records_.insert(sys_cid, os.str());
         }
     }
-
     void remove_from_sys_catalog(int tid) {
-        // remove from sys_tables
-        int sys_tid = tables_.get_table_id("sys_tables");
-        auto trs = records_.scan(sys_tid);
-        for (const auto& kv : trs) {
-            if (kv.second.rfind(std::to_string(tid) + "|", 0) == 0) records_.erase(kv.first);
-        }
-        // remove from sys_columns
-        int sys_cid = tables_.get_table_id("sys_columns");
-        auto crs = records_.scan(sys_cid);
-        for (const auto& kv : crs) {
-            if (kv.second.rfind(std::to_string(tid) + "|", 0) == 0) records_.erase(kv.first);
-        }
-        // remove from sys_indexes
-        int sys_i = tables_.get_table_id("sys_indexes");
-        auto irs = records_.scan(sys_i);
-        for (const auto& kv : irs) {
-            // row format: index_name|table_id|column|unique|root
-            auto f = split(kv.second, '|');
-            if (f.size() >= 2) {
-                try { if (std::stoi(f[1]) == tid) records_.erase(kv.first); } catch (...) {}
+        // remove from sys_tables/sys_columns/sys_indexes by scanning and filtering out matching TID
+        auto filter_out = [&](const std::string& sys_table){
+            int id = tables_.get_table_id(sys_table);
+            if (id < 0) return;
+            auto rows = records_.scan(id);
+            // naive: drop and recreate table entries without deleted rows
+            tables_.drop_table_by_id(id, disk_);
+            tables_.create_table(sys_table);
+            int nid = tables_.get_table_id(sys_table);
+            for (const auto& kv : rows) {
+                const std::string& row = kv.second;
+                auto fields = split(row, '|');
+                if (fields.empty()) continue;
+                bool keep = true;
+                if (sys_table == "sys_tables") {
+                    if (fields.size() >= 1 && std::stoi(fields[0]) == tid) keep = false;
+                } else if (sys_table == "sys_columns") {
+                    if (fields.size() >= 1 && std::stoi(fields[0]) == tid) keep = false;
+                } else if (sys_table == "sys_indexes") {
+                    if (fields.size() >= 2 && std::stoi(fields[1]) == tid) keep = false;
+                }
+                if (keep) records_.insert(nid, row);
             }
-        }
+        };
+        filter_out("sys_tables");
+        filter_out("sys_columns");
+        filter_out("sys_indexes");
     }
-
     void insert_into_sys_indexes(const std::string& index_name,
                                  int table_id,
                                  const std::string& column,
                                  bool unique,
                                  std::uint32_t root) {
         int sys_i = tables_.get_table_id("sys_indexes");
+        if (sys_i < 0) return;
         std::ostringstream os;
-        os << index_name << "|" << table_id << "|" << column << "|" << (unique ? "1" : "0") << "|" << root;
-        (void)records_.insert(sys_i, os.str());
+        os << index_name << '|' << table_id << '|' << to_lower(column) << '|' << (unique ? 1 : 0) << '|' << root;
+        records_.insert(sys_i, os.str());
     }
 
 private:
@@ -541,6 +519,7 @@ private:
     TableManager tables_;
     RecordManager records_;
     bool bootstrapping_ = false;
+    bool index_trace_ = false; // forward tracing to B+Tree operations
 };
 
 } // namespace pcsql

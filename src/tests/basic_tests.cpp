@@ -45,12 +45,15 @@ int main() {
         auto tid = eng.get_table_id("t");
         // t 表来自上一节，确保存在
         assert(tid >= 0);
-        const auto& pages_before = eng.get_table_pages(tid);
+        const auto pages_before = eng.get_table_pages(tid); // 拷贝，避免 drop 后悬垂引用
         assert(!pages_before.empty());
         // 删除表并回收页
         assert(eng.drop_table_by_name("t"));
         // 分配新页应从空闲列表取，等于 pages_before 的最后一个
         auto new_pid = eng.allocate_page();
+        std::cout << "pages_before: ";
+        for (auto pid : pages_before) std::cout << pid << ' ';
+        std::cout << "\nnew_pid: " << new_pid << std::endl;
         assert(new_pid == pages_before.back());
         eng.flush_all();
     }

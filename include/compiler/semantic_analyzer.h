@@ -26,7 +26,7 @@ public:
 
 private:
     void reportError(const std::string& message, size_t tokenIndex, const std::vector<Token>& tokens);
-    void checkValueType(const std::string& value, DataType expectedType);
+    void checkValueType(const std::string& value, DataType expectedType, size_t tokenIndex, const std::vector<Token>& tokens);
     void checkColumnExistence(const std::string& tableName, const std::vector<std::string>& columns, const std::vector<Token>& tokens);
     void checkWhereClause(WhereClause* whereClause, const std::string& tableName, const std::vector<Token>& tokens);
 

@@ -1,5 +1,5 @@
-5
-0 sys_tables 0
-1 sys_columns 1
-2 sys_indexes
+6
 3 sys_users
+2 sys_indexes
+1 sys_columns
+0 sys_tables
