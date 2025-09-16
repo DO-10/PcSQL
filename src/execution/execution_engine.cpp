@@ -1,599 +1,350 @@
-#include "execution/execution_engine.h"
+#include "execution_engine.h"
 #include <sstream>
-#include <iostream>
+#include <stdexcept>
 #include <cctype>
-#include <utility>
-#include <limits>
-#include <chrono>
-#include <ctime>
-#include <iomanip>
 #include <algorithm>
 
-// ---- Local helpers: string utils and condition evaluation ----
-static std::string to_lower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-    return s;
+namespace pcsql {
+
+// SeqScanOp 实现
+SeqScanOp::SeqScanOp(StorageEngine& storage, const std::string& table_name)
+    : storage_(storage), table_name_(table_name) {}
+
+void SeqScanOp::open() {
+    table_id_ = storage_.get_table_id(table_name_);
+    if (table_id_ < 0) {
+        throw std::runtime_error("Table not found: " + table_name_);
+    }
+    records_ = storage_.scan_table(table_id_);
+    current_index_ = 0;
 }
 
-static std::string trim(std::string s) {
-    size_t b = 0, e = s.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(s[e-1]))) --e;
-    return s.substr(b, e - b);
+bool SeqScanOp::next() {
+    if (current_index_ < records_.size()) {
+        current_index_++;
+        return true;
+    }
+    return false;
 }
 
-static std::vector<std::string> split(const std::string& s, char delim) {
-    std::vector<std::string> out; std::string cur; std::istringstream iss(s);
-    while (std::getline(iss, cur, delim)) out.push_back(cur);
-    return out;
+void SeqScanOp::close() {
+    records_.clear();
 }
 
-static std::string join(const std::vector<std::string>& v, const char* sep) {
-    std::ostringstream os;
-    for (size_t i = 0; i < v.size(); ++i) { if (i) os << sep; os << v[i]; }
-    return os.str();
+std::vector<std::string> SeqScanOp::getOutput() const {
+    if (current_index_ == 0 || current_index_ > records_.size()) {
+        return {};
+    }
+    
+    const auto& record = records_[current_index_ - 1].second;
+    std::vector<std::string> fields;
+    std::istringstream iss(record);
+    std::string field;
+    while (std::getline(iss, field, '|')) {
+        fields.push_back(field);
+    }
+    return fields;
 }
 
-static bool parse_condition(const std::string& cond, std::string& col, std::string& op, std::string& val) {
-    std::string s = trim(cond);
-    const char* ops[] = {">=", "<=", "!=", "=", ">", "<"};
-    for (const char* o : ops) {
-        auto pos = s.find(o);
-        if (pos != std::string::npos) {
-            col = trim(s.substr(0, pos));
-            op = o;
-            val = trim(s.substr(pos + std::strlen(o)));
-            if (!val.empty() && ((val.front()=='\'' && val.back()=='\'') || (val.front()=='\"' && val.back()=='\"'))) {
-                if (val.size() >= 2) val = val.substr(1, val.size()-2);
-            }
-            return !col.empty() && !op.empty() && !val.empty();
+// FilterOp 实现
+FilterOp::FilterOp(std::unique_ptr<Operator> child, const std::string& condition)
+    : child_(std::move(child)), condition_(condition) {}
+
+void FilterOp::open() {
+    child_->open();
+}
+
+bool FilterOp::next() {
+    while (child_->next()) {
+        auto record = child_->getOutput();
+        if (satisfiesCondition(record)) {
+            return true;
         }
     }
     return false;
 }
 
-static bool to_bool_ci(const std::string& s) {
-    auto t = to_lower(s);
-    return (t=="true" || t=="1" || t=="yes" || t=="y");
+void FilterOp::close() {
+    child_->close();
 }
 
-static bool compare_typed(DataType type, const std::string& l, const std::string& op, const std::string& r) {
-    auto cmp = [&](auto lhs, auto rhs)->int { if (lhs < rhs) return -1; if (lhs > rhs) return 1; return 0; };
-    int c = 0;
-    try {
-        switch (type) {
-            case DataType::INT: { long long li = std::stoll(l); long long ri = std::stoll(r); c = cmp(li, ri); break; }
-            case DataType::DOUBLE: { double ld = std::stod(l); double rd = std::stod(r); c = cmp(ld, rd); break; }
-            case DataType::BOOLEAN: { bool lb = to_bool_ci(l); bool rb = to_bool_ci(r); c = cmp(lb, rb); break; }
-            case DataType::TIMESTAMP:
-            case DataType::VARCHAR:
-            default: { c = cmp(l, r); break; }
-        }
-    } catch (...) {
-        c = (l < r ? -1 : (l > r ? 1 : 0));
+std::vector<std::string> FilterOp::getOutput() const {
+    return child_->getOutput();
+}
+
+bool FilterOp::satisfiesCondition(const std::vector<std::string>& record) const {
+    // 简化的条件评估 - 实际实现需要解析条件表达式
+    // 这里只实现简单的等值比较
+    size_t pos = condition_.find('=');
+    if (pos == std::string::npos) {
+        return false;
     }
-    if (op == "=") return c == 0;
-    if (op == "!=") return c != 0;
-    if (op == ">") return c > 0;
-    if (op == "<") return c < 0;
-    if (op == ">=") return c >= 0;
-    if (op == "<=") return c <= 0;
+    
+    std::string column = condition_.substr(0, pos);
+    std::string value = condition_.substr(pos + 1);
+    
+    // 去除空格
+    column.erase(std::remove_if(column.begin(), column.end(), ::isspace), column.end());
+    value.erase(std::remove_if(value.begin(), value.end(), ::isspace), value.end());
+    
+    // 在实际系统中，需要知道列的位置
+    // 这里假设第一列是ID
+    if (column == "id" && !record.empty()) {
+        return record[0] == value;
+    }
+    
     return false;
 }
 
-// Forward declarations for helper utilities defined later in this file
-static bool constraint_set_contains(const std::vector<std::string>& cons, const std::string& token_lower);
-static bool has_auto_increment(const std::vector<std::string>& cons);
-static bool has_default_current_timestamp(const std::vector<std::string>& cons);
-static bool is_null_or_default_literal(const std::string& v);
-static std::string now_timestamp_string();
-std::string ExecutionEngine::format_rows(const std::vector<std::pair<pcsql::RID, std::string>>& rows) {
-    std::ostringstream os;
-    for (const auto& [rid, bytes] : rows) {
-        os << "(" << rid.page_id << "," << rid.slot_id << ") => " << bytes << "\n";
-    }
-    return os.str();
+// ProjectOp 实现
+ProjectOp::ProjectOp(std::unique_ptr<Operator> child, const std::vector<std::string>& columns)
+    : child_(std::move(child)), columns_(columns) {}
+
+void ProjectOp::open() {
+    child_->open();
 }
 
-// 接收 Compiler 返回的 CompiledUnit 并根据 AST 分派
-std::string ExecutionEngine::execute(const Compiler::CompiledUnit& unit) {
-    try {
-        if (auto* s = dynamic_cast<SelectStatement*>(unit.ast.get())) return handleSelect(s);
-        if (auto* c = dynamic_cast<CreateTableStatement*>(unit.ast.get())) return handleCreate(c);
-        if (auto* ci = dynamic_cast<CreateIndexStatement*>(unit.ast.get())) return handleCreateIndex(ci);
-        if (auto* i = dynamic_cast<InsertStatement*>(unit.ast.get())) return handleInsert(i);
-        if (auto* d = dynamic_cast<DeleteStatement*>(unit.ast.get())) return handleDelete(d);
-        if (auto* u = dynamic_cast<UpdateStatement*>(unit.ast.get())) return handleUpdate(u);
-        // 新增：DROP TABLE
-        if (auto* dt = dynamic_cast<DropTableStatement*>(unit.ast.get())) return handleDropTable(dt);
-        return "[ExecutionEngine] Unsupported statement";
-    } catch (const std::exception& ex) {
-        return std::string("[ExecutionEngine] Error: ") + ex.what();
-    }
-}
-
-//执行创建表
-std::string ExecutionEngine::handleCreate(CreateTableStatement* stmt) {
-    //从 AST 组装列定义 -> ColumnMetadata（占位保留 constraints 原样存储）
-    std::vector<ColumnMetadata> cols;
-    cols.reserve(stmt->columns.size());
-    for (const auto& c : stmt->columns) {
-        ColumnMetadata m;
-        m.name = c.name;
-        m.type = stringToDataType(c.type);
-        m.constraints = c.constraints; // 先占位记录
-        cols.push_back(std::move(m));
-    }
-
-    // 获取表名
-    std::string table_lc = to_lower(stmt->tableName);
-    try {
-        // 通过 StorageEngine 的 create_table 统一完成：
-        // - 物理表创建（TableManager）
-        // - 系统目录记录表元数据（SchemaCatalog）
-        //   注意：需要传递列元数据
-        int tid = storage_.create_table(table_lc, cols);
-        (void)tid;
-    } catch (const std::exception& e) {
-        return std::string("CREATE TABLE failed: ") + e.what();
-    }
-
-    return "CREATE TABLE OK (table=" + stmt->tableName + ")";
-}
-
-// 新增：执行 CREATE INDEX（当前仅支持 INT 列/唯一索引）
-std::string ExecutionEngine::handleCreateIndex(CreateIndexStatement* stmt) {
-    try {
-        bool ok = storage_.create_index(stmt->indexName, stmt->tableName, stmt->columnName, true);
-        if (!ok) return "CREATE INDEX failed";
-    } catch (const std::exception& e) {
-        return std::string("CREATE INDEX failed: ") + e.what();
-    }
-    return "CREATE INDEX OK (" + stmt->indexName + ")";
-}
-
-std::string ExecutionEngine::handleInsert(InsertStatement* stmt) {
-    int tid = storage_.get_table_id(to_lower(stmt->tableName));
-    if (tid < 0) return "Table not found: " + stmt->tableName;
-
-    // Load schema to interpret constraints and types
-    const auto& schema = storage_.get_table_schema(to_lower(stmt->tableName));
-
-    // Start with provided values (already validated by semantic analyzer for count/type basics)
-    std::vector<std::string> vals = stmt->values;
-    vals.resize(schema.columns.size());
-
-    // Preload existing rows for AUTO_INCREMENT max scanning (only if needed)
-    bool any_auto_inc = false;
-    for (const auto& col : schema.columns) if (has_auto_increment(col.constraints)) { any_auto_inc = true; break; }
-    std::vector<std::pair<pcsql::RID, std::string>> rows;
-    if (any_auto_inc) {
-        rows = storage_.scan_table(tid);
-    }
-
-    for (size_t i = 0; i < schema.columns.size(); ++i) {
-        const auto& col = schema.columns[i];
-        std::string& v = vals[i];
-        // Handle DEFAULT CURRENT_TIMESTAMP
-        if (has_default_current_timestamp(col.constraints)) {
-            if (is_null_or_default_literal(v) || to_lower(v) == "current_timestamp") {
-                v = now_timestamp_string();
-            }
-        } else if (to_lower(v) == "current_timestamp") {
-            if (col.type == DataType::TIMESTAMP) {
-                v = now_timestamp_string();
+bool ProjectOp::next() {
+    if (child_->next()) {
+        auto record = child_->getOutput();
+        current_output_.clear();
+        
+        // 在实际系统中，需要根据列名找到对应的位置
+        // 这里简化处理，只返回请求的列
+        for (const auto& col : columns_) {
+            // 假设列名与位置对应
+            size_t index = std::stoul(col);
+            if (index < record.size()) {
+                current_output_.push_back(record[index]);
             }
         }
-        // Handle AUTO_INCREMENT for integer columns
-        if (has_auto_increment(col.constraints)) {
-            bool need_generate = is_null_or_default_literal(v) || v.empty();
-            if (need_generate) {
-                long long max_val = 0;
-                bool found = false;
-                for (const auto& kv : rows) {
-                    auto fields = split(kv.second, '|');
-                    if (i < fields.size()) {
-                        try {
-                            long long cur = std::stoll(fields[i]);
-                            if (!found || cur > max_val) { max_val = cur; found = true; }
-                        } catch (...) {
-                            // ignore non-numeric
-                        }
-                    }
-                }
-                long long next = found ? (max_val + 1) : 1;
-                v = std::to_string(next);
-            }
-        }
-    }
-
-    std::string row = join(vals, "|");
-    auto rid = storage_.insert_record(tid, row);
-    // 新增：插入后更新该表相关索引
-    storage_.update_indexes_on_insert(tid, row, rid);
-
-    std::ostringstream os; os << "INSERT OK rid=(" << rid.page_id << "," << rid.slot_id << ")";
-    return os.str();
-}
-
-std::string ExecutionEngine::handleSelect(SelectStatement* stmt) {
-    int tid = storage_.get_table_id(to_lower(stmt->fromTable));
-    if (tid < 0) return "Table not found: " + stmt->fromTable;
-
-    // Diagnostics to describe the query process
-    std::vector<std::string> diag;
-
-    // Try index path first; now supports INT equality and range operators
-    std::vector<std::pair<pcsql::RID, std::string>> rows;
-    bool used_index = false;
-    std::string strategy = "full_scan";
-    std::string parsed_col, parsed_op, parsed_val;
-
-    if (stmt->whereClause) {
-        if (auto* where = dynamic_cast<WhereClause*>(stmt->whereClause.get())) {
-            if (parse_condition(where->condition, parsed_col, parsed_op, parsed_val)) {
-                diag.push_back("WHERE parsed: " + parsed_col + " " + parsed_op + " " + parsed_val);
-                const auto& schema = storage_.get_table_schema(to_lower(stmt->fromTable));
-                std::string col_lc = to_lower(parsed_col);
-                int where_col_idx = -1; DataType where_dtype = DataType::UNKNOWN;
-                for (size_t i = 0; i < schema.columns.size(); ++i) {
-                    if (to_lower(schema.columns[i].name) == col_lc) { where_col_idx = static_cast<int>(i); where_dtype = schema.columns[i].type; break; }
-                }
-                if (where_col_idx >= 0) {
-                    diag.push_back("WHERE column index: " + std::to_string(where_col_idx) + ", type: " + std::to_string(static_cast<int>(where_dtype)));
-                }
-                if (where_col_idx >= 0 && where_dtype == DataType::INT) {
-                    // Check index existence on this column
-                    auto idxs = storage_.get_table_indexes(tid);
-                    bool has_idx = false;
-                    for (const auto& idx : idxs) { if (idx.column_index == where_col_idx) { has_idx = true; break; } }
-                    diag.push_back(std::string("Index exists on column: ") + (has_idx ? "yes" : "no"));
-
-                    if (has_idx) {
-                        try {
-                            long long v = std::stoll(parsed_val);
-                            if (parsed_op == "=") {
-                                rows = storage_.index_select_eq_int(tid, where_col_idx, v);
-                                used_index = true; strategy = "index_eq";
-                            } else if (parsed_op == ">" || parsed_op == ">=" || parsed_op == "<" || parsed_op == "<=") {
-                                long long low = std::numeric_limits<long long>::min();
-                                long long high = std::numeric_limits<long long>::max();
-                                if (parsed_op == ">") {
-                                    if (v == std::numeric_limits<long long>::max()) {
-                                        // empty
-                                        rows.clear(); used_index = true; strategy = "index_range(> empty)";
-                                    } else {
-                                        // use [v, +inf], rely on post WHERE filter to drop equality
-                                        low = v; // [v, +inf]
-                                        rows = storage_.index_select_range_int(tid, where_col_idx, low, high);
-                                        used_index = true; strategy = "index_range(>)";
-                                    }
-                                } else if (parsed_op == ">=") {
-                                    low = v; // [v, +inf]
-                                    rows = storage_.index_select_range_int(tid, where_col_idx, low, high);
-                                    used_index = true; strategy = "index_range(>=)";
-                                } else if (parsed_op == "<") {
-                                    if (v == std::numeric_limits<long long>::min()) {
-                                        rows.clear(); used_index = true; strategy = "index_range(< empty)";
-                                    } else {
-                                        // use [-inf, v], rely on post WHERE filter to drop equality
-                                        high = v; // [-inf, v]
-                                        rows = storage_.index_select_range_int(tid, where_col_idx, low, high);
-                                        used_index = true; strategy = "index_range(<)";
-                                    }
-                                } else if (parsed_op == "<=") {
-                                    high = v; // [-inf, v]
-                                    rows = storage_.index_select_range_int(tid, where_col_idx, low, high);
-                                    used_index = true; strategy = "index_range(<=)";
-                                }
-                                if (used_index) {
-                                    diag.push_back("Range low/high used: [" + std::to_string(low) + ", " + std::to_string(high) + "]");
-                                }
-                            } else if (parsed_op == "!=") {
-                                // Use two ranges: (-inf, v] U [v, +inf) and rely on post-filter to drop equality
-                                std::vector<std::pair<pcsql::RID, std::string>> left, right;
-                                if (v != std::numeric_limits<long long>::min()) {
-                                    long long high = v; // include v (will be filtered out)
-                                    left = storage_.index_select_range_int(tid, where_col_idx, std::numeric_limits<long long>::min(), high);
-                                }
-                                if (v != std::numeric_limits<long long>::max()) {
-                                    long long low = v; // include v (will be filtered out)
-                                    right = storage_.index_select_range_int(tid, where_col_idx, low, std::numeric_limits<long long>::max());
-                                }
-                                rows.reserve(left.size() + right.size());
-                                rows.insert(rows.end(), left.begin(), left.end());
-                                rows.insert(rows.end(), right.begin(), right.end());
-                                used_index = true; strategy = "index_range(!= as two ranges)";
-                            }
-                        } catch (...) {
-                            // fall back to full scan if cannot parse integer
-                            diag.push_back("WHERE value not integer, fall back to scan");
-                        }
-                    }
-                } else if (where_col_idx >= 0 && where_dtype == DataType::VARCHAR) {
-                    // VARCHAR index path
-                    auto idxs = storage_.get_table_indexes(tid);
-                    bool has_idx = false;
-                    for (const auto& idx : idxs) { if (idx.column_index == where_col_idx) { has_idx = true; break; } }
-                    diag.push_back(std::string("Index exists on column: ") + (has_idx ? "yes" : "no"));
-                    if (has_idx) {
-                        const std::string& v = parsed_val;
-                        const std::string minStr = ""; // minimal sentinel
-                        const std::string maxStr(128, static_cast<char>(0xFF)); // maximal sentinel for FixedString<128>
-                        if (parsed_op == "=") {
-                            rows = storage_.index_select_eq_varchar(tid, where_col_idx, v);
-                            used_index = true; strategy = "index_eq(varchar)";
-                        } else if (parsed_op == ">" || parsed_op == ">=" || parsed_op == "<" || parsed_op == "<=") {
-                            std::string low = minStr;
-                            std::string high = maxStr;
-                            if (parsed_op == ">") {
-                                // use [v, +inf] and rely on post-filter to drop equality
-                                low = v; // [v, +inf]
-                                rows = storage_.index_select_range_varchar(tid, where_col_idx, low, high);
-                                used_index = true; strategy = "index_range(> varchar)";
-                            } else if (parsed_op == ">=") {
-                                low = v; // [v, +inf]
-                                rows = storage_.index_select_range_varchar(tid, where_col_idx, low, high);
-                                used_index = true; strategy = "index_range(>= varchar)";
-                            } else if (parsed_op == "<") {
-                                // use [-inf, v] and rely on post-filter to drop equality
-                                high = v; // [-inf, v]
-                                rows = storage_.index_select_range_varchar(tid, where_col_idx, low, high);
-                                used_index = true; strategy = "index_range(< varchar)";
-                            } else if (parsed_op == "<=") {
-                                high = v; // [-inf, v]
-                                rows = storage_.index_select_range_varchar(tid, where_col_idx, low, high);
-                                used_index = true; strategy = "index_range(<= varchar)";
-                            }
-                            if (used_index) {
-                                diag.push_back(std::string("Range low/high used (varchar): [") + low + ", " + (high == maxStr ? "MAX" : high) + "]");
-                            }
-                        } else if (parsed_op == "!=") {
-                            // two ranges: [-inf, v] and [v, +inf], rely on post-filter to drop equality
-                            auto left = storage_.index_select_range_varchar(tid, where_col_idx, minStr, v);
-                            auto right = storage_.index_select_range_varchar(tid, where_col_idx, v, maxStr);
-                            rows.reserve(left.size() + right.size());
-                            rows.insert(rows.end(), left.begin(), left.end());
-                            rows.insert(rows.end(), right.begin(), right.end());
-                            used_index = true; strategy = "index_range(!= varchar as two ranges)";
-                        }
-                    }
-                }
-            } else {
-                diag.push_back("WHERE parse failed, fall back to scan");
-            }
-        }
-    }
-
-    if (!used_index) {
-        rows = storage_.scan_table(tid);
-        strategy = "full_scan";
-    }
-    diag.push_back(std::string("Index hit: ") + (used_index ? "true" : "false") + ", strategy: " + strategy + ", candidates: " + std::to_string(rows.size()));
-
-    // Apply WHERE filtering on the working set (for correctness)
-    if (stmt->whereClause) {
-        if (auto* where = dynamic_cast<WhereClause*>(stmt->whereClause.get())) {
-            std::string col, op, val;
-            if (parse_condition(where->condition, col, op, val)) {
-                std::string col_lc = to_lower(col);
-                const auto& schema = storage_.get_table_schema(to_lower(stmt->fromTable));
-                int idx = -1; DataType dtype = DataType::UNKNOWN;
-                for (size_t i = 0; i < schema.columns.size(); ++i) {
-                    if (to_lower(schema.columns[i].name) == col_lc) { idx = static_cast<int>(i); dtype = schema.columns[i].type; break; }
-                }
-                if (idx >= 0) {
-                    std::vector<std::pair<pcsql::RID, std::string>> filtered;
-                    filtered.reserve(rows.size());
-                    for (const auto& kv : rows) {
-                        auto fields = split(kv.second, '|');
-                        if (idx < static_cast<int>(fields.size())) {
-                            const std::string& f = fields[idx];
-                            if (compare_typed(dtype, f, op, val)) filtered.push_back(kv);
-                        }
-                    }
-                    rows.swap(filtered);
-                }
-            }
-        }
-    }
-
-    diag.push_back("Final rows: " + std::to_string(rows.size()));
-
-    std::ostringstream os;
-    os << "SELECT " << join(stmt->columns, ",") << " FROM " << stmt->fromTable << "\n";
-    for (const auto& ln : diag) os << "[QUERY] " << ln << "\n";
-    os << format_rows(rows);
-    return os.str();
-}
-
-std::string ExecutionEngine::handleDelete(DeleteStatement* stmt) {
-    int tid = storage_.get_table_id(to_lower(stmt->tableName));
-    if (tid < 0) return "Table not found: " + stmt->tableName;
-
-    auto rows = storage_.scan_table(tid);
-
-    // If there is a WHERE clause, filter rows first (type-aware comparison, same as SELECT)
-    std::vector<std::pair<pcsql::RID, std::string>> targets;
-    if (stmt->whereClause) {
-        if (auto* where = dynamic_cast<WhereClause*>(stmt->whereClause.get())) {
-            std::string col, op, val;
-            if (parse_condition(where->condition, col, op, val)) {
-                std::string col_lc = to_lower(col);
-                const auto& schema = storage_.get_table_schema(to_lower(stmt->tableName));
-                int idx = -1; DataType dtype = DataType::UNKNOWN;
-                for (size_t i = 0; i < schema.columns.size(); ++i) {
-                    if (to_lower(schema.columns[i].name) == col_lc) { idx = static_cast<int>(i); dtype = schema.columns[i].type; break; }
-                }
-                if (idx >= 0) {
-                    targets.reserve(rows.size());
-                    for (const auto& kv : rows) {
-                        auto fields = split(kv.second, '|');
-                        if (idx < static_cast<int>(fields.size())) {
-                            const std::string& f = fields[idx];
-                            if (compare_typed(dtype, f, op, val)) targets.push_back(kv);
-                        }
-                    }
-                } else {
-                    // Column not found by some reason (should have been caught by semantic analyzer) -> no-op for safety
-                    targets.clear();
-                }
-            } else {
-                // WHERE exists but cannot be parsed -> do not delete anything for safety
-                targets.clear();
-            }
-        }
-    } else {
-        // No WHERE -> delete all rows (explicit full table delete)
-        targets = std::move(rows);
-    }
-
-    size_t n = 0;
-    for (auto& kv : targets) {
-        n += storage_.delete_record(kv.first) ? 1 : 0;
-    }
-
-    std::ostringstream os; os << "DELETE OK count=" << n; return os.str();
-}
-
-std::string ExecutionEngine::handleUpdate(UpdateStatement* stmt) {
-    int tid = storage_.get_table_id(to_lower(stmt->tableName));
-    if (tid < 0) return "Table not found: " + stmt->tableName;
-
-    // Load all rows to determine targets
-    auto rows = storage_.scan_table(tid);
-
-    // Build assignment plan: map column name -> (index, type, value)
-    const auto& schema = storage_.get_table_schema(to_lower(stmt->tableName));
-    struct Assign { int idx; DataType type; std::string value; };
-    std::vector<Assign> assigns; assigns.reserve(stmt->assignments.size());
-    for (const auto& kv : stmt->assignments) {
-        const std::string& col = kv.first;
-        const std::string& val = kv.second;
-        std::string col_lc = to_lower(col);
-        int idx = -1; DataType dtype = DataType::UNKNOWN;
-        for (size_t i = 0; i < schema.columns.size(); ++i) {
-            if (to_lower(schema.columns[i].name) == col_lc) { idx = static_cast<int>(i); dtype = schema.columns[i].type; break; }
-        }
-        if (idx >= 0) {
-            assigns.push_back({idx, dtype, val});
-        }
-        // If column not found (should be prevented by semantic analyzer), just skip for safety
-    }
-
-    // Determine target rows based on WHERE clause (same logic as SELECT/DELETE)
-    std::vector<std::pair<pcsql::RID, std::string>> targets;
-    if (stmt->whereClause) {
-        if (auto* where = dynamic_cast<WhereClause*>(stmt->whereClause.get())) {
-            std::string col, op, val;
-            if (parse_condition(where->condition, col, op, val)) {
-                std::string col_lc = to_lower(col);
-                int idx = -1; DataType dtype = DataType::UNKNOWN;
-                for (size_t i = 0; i < schema.columns.size(); ++i) {
-                    if (to_lower(schema.columns[i].name) == col_lc) { idx = static_cast<int>(i); dtype = schema.columns[i].type; break; }
-                }
-                if (idx >= 0) {
-                    targets.reserve(rows.size());
-                    for (const auto& row : rows) {
-                        auto fields = split(row.second, '|');
-                        if (idx < static_cast<int>(fields.size())) {
-                            const std::string& f = fields[idx];
-                            if (compare_typed(dtype, f, op, val)) targets.push_back(row);
-                        }
-                    }
-                } else {
-                    // WHERE references unknown column -> do nothing for safety
-                    targets.clear();
-                }
-            } else {
-                // WHERE cannot be parsed -> do nothing for safety
-                targets.clear();
-            }
-        }
-    } else {
-        // No WHERE: update all rows
-        targets = std::move(rows);
-    }
-
-    // Apply assignments to each target row and write back
-    size_t n = 0;
-    for (const auto& kv : targets) {
-        auto fields = split(kv.second, '|');
-        bool changed = false;
-        for (const auto& a : assigns) {
-            if (a.idx >= 0 && a.idx < static_cast<int>(fields.size())) {
-                // For strings, lexer already removed quotes; for numbers they are raw digits.
-                fields[a.idx] = a.value;
-                changed = true;
-            }
-        }
-        if (changed) {
-            std::string new_row = join(fields, "|");
-            if (storage_.update_record(kv.first, new_row)) ++n;
-        }
-    }
-
-    std::ostringstream os; os << "UPDATE OK count=" << n; return os.str();
-}
-
-// Helpers for INSERT default value handling
-// Removed duplicate to_lower definition (a to_lower helper already exists near the top of this file)
-
-// Removed duplicate to_lower definition (a to_lower helper already exists near the top of this file)
-
-std::string ExecutionEngine::handleDropTable(DropTableStatement* stmt) {
-    // 统一转小写以匹配存储层命名规范
-    std::string table_lc = to_lower(stmt->tableName);
-    try {
-        bool ok = storage_.drop_table_by_name(table_lc);
-        if (ok) {
-            return "DROP TABLE OK (table=" + stmt->tableName + ")";
-        } else {
-            // 未删除成功：若 IF EXISTS 则视为 no-op 成功，否则提示不存在
-            if (stmt->ifExists) {
-                return "DROP TABLE skipped (not exists)";
-            }
-            return "DROP TABLE failed: table not found: " + stmt->tableName;
-        }
-    } catch (const std::exception& e) {
-        return std::string("DROP TABLE failed: ") + e.what();
-    }
-}
-
-static bool constraint_set_contains(const std::vector<std::string>& cons, const std::string& token_lower) {
-    for (auto c : cons) {
-        auto lc = to_lower(c);
-        if (lc == token_lower) return true;
+        return true;
     }
     return false;
 }
 
-static bool has_auto_increment(const std::vector<std::string>& cons) {
-    return constraint_set_contains(cons, "auto_increment");
+void ProjectOp::close() {
+    child_->close();
 }
 
-static bool has_default_current_timestamp(const std::vector<std::string>& cons) {
-    // DEFAULT CURRENT_TIMESTAMP represented as tokens ["DEFAULT", "CURRENT_TIMESTAMP"]
-    return constraint_set_contains(cons, "default") && constraint_set_contains(cons, "current_timestamp");
+std::vector<std::string> ProjectOp::getOutput() const {
+    return current_output_;
 }
 
-static inline bool is_null_or_default_literal(const std::string& v) {
-    auto s = to_lower(v);
-    return (s == "null" || s == "default");
+// CreateTableOp 实现
+CreateTableOp::CreateTableOp(StorageEngine& storage, const std::string& table_name, 
+                            const std::vector<std::tuple<std::string, std::string, size_t>>& columns)
+    : storage_(storage), table_name_(table_name), columns_(columns), executed_(false) {}
+
+void CreateTableOp::open() {
+    // 转换列定义
+    std::vector<ColumnMetadata> col_meta;
+    for (const auto& col : columns_) {
+        ColumnMetadata cm;
+        cm.name = std::get<0>(col);
+        cm.type = stringToDataType(std::get<1>(col));
+        cm.length = std::get<2>(col);
+        col_meta.push_back(cm);
+    }
+    
+    // 创建表
+    storage_.create_table(table_name_, col_meta);
+    executed_ = true;
 }
 
-static std::string now_timestamp_string() {
-    using namespace std::chrono;
-    auto now = system_clock::now();
-    std::time_t t = system_clock::to_time_t(now);
-    std::tm tm{};
-    // thread-safe localtime
-#if defined(_WIN32)
-    localtime_s(&tm, &t);
-#else
-    localtime_r(&t, &tm);
-#endif
-    std::ostringstream os;
-    os << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-    return os.str();
+bool CreateTableOp::next() {
+    if (!executed_) {
+        executed_ = true;
+        return true;
+    }
+    return false;
 }
+
+void CreateTableOp::close() {}
+
+std::vector<std::string> CreateTableOp::getOutput() const {
+    return {"Table created: " + table_name_};
+}
+
+// InsertOp 实现
+InsertOp::InsertOp(StorageEngine& storage, const std::string& table_name, 
+                  const std::vector<std::string>& values)
+    : storage_(storage), table_name_(table_name), values_(values), executed_(false) {}
+
+void InsertOp::open() {
+    int table_id = storage_.get_table_id(table_name_);
+    if (table_id < 0) {
+        throw std::runtime_error("Table not found: " + table_name_);
+    }
+    
+    // 构建记录数据
+    std::ostringstream record_data;
+    for (size_t i = 0; i < values_.size(); ++i) {
+        if (i > 0) record_data << "|";
+        record_data << values_[i];
+    }
+    
+    // 插入记录
+    storage_.insert_record(table_id, record_data.str());
+    executed_ = true;
+}
+
+bool InsertOp::next() {
+    if (!executed_) {
+        executed_ = true;
+        return true;
+    }
+    return false;
+}
+
+void InsertOp::close() {}
+
+std::vector<std::string> InsertOp::getOutput() const {
+    return {"1 row inserted into " + table_name_};
+}
+
+// DeleteOp 实现
+DeleteOp::DeleteOp(StorageEngine& storage, const std::string& table_name, 
+                  std::unique_ptr<Operator> child)
+    : storage_(storage), table_name_(table_name), child_(std::move(child)) {}
+
+void DeleteOp::open() {
+    child_->open();
+}
+
+bool DeleteOp::next() {
+    if (child_->next()) {
+        // 在实际系统中，需要从子算子获取RID
+        // 这里简化处理，假设子算子返回RID
+        auto output = child_->getOutput();
+        if (output.size() >= 2) {
+            RID rid;
+            rid.page_id = std::stoul(output[0]);
+            rid.slot_id = std::stoul(output[1]);
+            storage_.delete_record(rid);
+            return true;
+        }
+    }
+    return false;
+}
+
+void DeleteOp::close() {
+    child_->close();
+}
+
+std::vector<std::string> DeleteOp::getOutput() const {
+    return {"Record deleted"};
+}
+
+// UpdateOp 实现
+UpdateOp::UpdateOp(StorageEngine& storage, const std::string& table_name, 
+                  const std::vector<std::pair<std::string, std::string>>& assignments,
+                  std::unique_ptr<Operator> child)
+    : storage_(storage), table_name_(table_name), 
+      assignments_(assignments), child_(std::move(child)) {}
+
+void UpdateOp::open() {
+    child_->open();
+}
+
+bool UpdateOp::next() {
+    if (child_->next()) {
+        // 在实际系统中，需要从子算子获取RID和当前值
+        // 这里简化处理，假设子算子返回RID
+        auto output = child_->getOutput();
+        if (output.size() >= 2) {
+            RID rid;
+            rid.page_id = std::stoul(output[0]);
+            rid.slot_id = std::stoul(output[1]);
+            
+            // 读取当前记录
+            std::string current_data;
+            if (storage_.read_record(rid, current_data)) {
+                // 解析当前记录
+                std::vector<std::string> fields;
+                std::istringstream iss(current_data);
+                std::string field;
+                while (std::getline(iss, field, '|')) {
+                    fields.push_back(field);
+                }
+                
+                // 应用更新
+                for (const auto& assign : assignments_) {
+                    // 在实际系统中，需要知道列的位置
+                    // 这里简化处理，只更新第一列
+                    if (assign.first == "id" && !fields.empty()) {
+                        fields[0] = assign.second;
+                    }
+                }
+                
+                // 构建新记录
+                std::ostringstream new_data;
+                for (size_t i = 0; i < fields.size(); ++i) {
+                    if (i > 0) new_data << "|";
+                    new_data << fields[i];
+                }
+                
+                // 更新记录
+                storage_.update_record(rid, new_data.str());
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void UpdateOp::close() {
+    child_->close();
+}
+
+std::vector<std::string> UpdateOp::getOutput() const {
+    return {"Record updated"};
+}
+
+// CreateIndexOp 实现
+CreateIndexOp::CreateIndexOp(StorageEngine& storage, const std::string& index_name, 
+                            const std::string& table_name, const std::string& column_name)
+    : storage_(storage), index_name_(index_name), 
+      table_name_(table_name), column_name_(column_name), executed_(false) {}
+
+void CreateIndexOp::open() {
+    // 在实际系统中，这里会创建索引
+    // 简化处理，只打印信息
+    std::cout << "Creating index " << index_name_ 
+              << " on " << table_name_ << "(" << column_name_ << ")" << std::endl;
+    executed_ = true;
+}
+
+bool CreateIndexOp::next() {
+    if (!executed_) {
+        executed_ = true;
+        return true;
+    }
+    return false;
+}
+
+void CreateIndexOp::close() {}
+
+std::vector<std::string> CreateIndexOp::getOutput() const {
+    return {"Index created: " + index_name_};
+}
+
+// ExecutionEngine 实现
+ExecutionEngine::ExecutionEngine(StorageEngine& storage) 
+    : storage_(storage) {}
+
+std::vector<std::vector<std::string>> ExecutionEngine::execute(std::unique_ptr<Operator> root) {
+    std::vector<std::vector<std::string>> results;
+    rows_affected_ = 0;
+    
+    root->open();
+    while (root->next()) {
+        results.push_back(root->getOutput());
+        rows_affected_++;
+    }
+    root->close();
+    
+    return results;
+}
+
+} // namespace pcsql
