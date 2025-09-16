@@ -12,115 +12,125 @@ struct ASTNode {
     virtual ~ASTNode() = default;
 };
 
-struct SelectStatement : public ASTNode {
-    std::vector<std::string> columns;  // 选择的列
-    std::string fromTable;             // 来源表
-    std::unique_ptr<ASTNode> whereClause; // WHERE 子句
-    size_t tableTokenIndex;            // 表名在 token 流中的位置
-
-    bool selectAll = false;                // 新增：是否选择了所有列（*）    
+// 新增：表示二元表达式的 AST 节点
+struct BinaryExpression : public ASTNode {
+    std::string op;
+    std::unique_ptr<ASTNode> left;
+    std::unique_ptr<ASTNode> right;
 };
 
-// 代表 CREATE INDEX 语句的 AST 节点
+// 新增：表示列引用的 AST 节点，如 `table.column` 或 `column`
+struct ColumnReference : public ASTNode {
+    std::string tableName;
+    std::string columnName;
+};
+
+// 新增：表示字面量的 AST 节点，如 `123`, `'abc'`, `1.23`
+struct Literal : public ASTNode {
+    std::string value;
+    std::string type; // INT, DOUBLE, STRING
+};
+
+// 新增：连接类型
+enum class JoinType {
+    INNER,
+    LEFT,
+    RIGHT,
+    FULL
+};
+
+// 新增：表示 JOIN 子句的 AST 节点
+struct JoinClause : public ASTNode {
+    JoinType type; // 新增：连接类型
+    std::string rightTable;
+    std::unique_ptr<ASTNode> onCondition;
+    std::unique_ptr<JoinClause> nextJoin; // 用于支持多重 JOIN
+};
+
+// ---------------------- 现有 AST 节点 ----------------------
+
+struct ColumnDefinition {
+    std::string name;
+    std::string type;
+    std::vector<std::string> constraints;
+};
+
+struct SelectStatement : public ASTNode {
+    std::vector<std::string> columns;
+    std::string fromTable;
+    std::unique_ptr<JoinClause> joinClause;
+    std::unique_ptr<ASTNode> whereCondition;
+};
+
+struct CreateTableStatement : public ASTNode {
+    std::string tableName;
+    std::vector<ColumnDefinition> columnDefinitions;
+};
+
+struct InsertStatement : public ASTNode {
+    std::string tableName;
+    std::vector<std::string> values;
+};
+
+struct DeleteStatement : public ASTNode {
+    std::string tableName;
+    std::unique_ptr<ASTNode> whereCondition;
+};
+
+struct UpdateStatement : public ASTNode {
+    std::string tableName;
+    std::map<std::string, std::string> assignments;
+    std::unique_ptr<ASTNode> whereCondition;
+};
+
 struct CreateIndexStatement : public ASTNode {
     std::string indexName;
     std::string tableName;
     std::string columnName;
-    
-    CreateIndexStatement(const std::string& index, const std::string& table, const std::string& column)
-        : indexName(index), tableName(table), columnName(column) {}
 };
 
-// 修改后的 ColumnDefinition
-struct ColumnDefinition {
-    std::string name;
-    std::string type;
-    size_t length = 0; // 新增：用于存储 CHAR 或 VARCHAR 的长度
-    std::vector<std::string> constraints;
+// ---------------------- Parser 类 ----------------------
 
-    // 显式构造函数，用于支持列表初始化
-    ColumnDefinition(const std::string& name, const std::string& type, size_t len, const std::vector<std::string>& cons)
-        : name(name), type(type), length(len), constraints(cons) {}
-
-    // 默认构造函数
-    ColumnDefinition() = default;
-};
-struct CreateTableStatement : public ASTNode {
-    std::string tableName;
-    std::vector<ColumnDefinition> columns;
-    size_t tableTokenIndex;
-};
-
-// INSERT 语句节点
-struct InsertStatement : public ASTNode {
-    std::string tableName;
-    std::vector<std::string> values;
-    size_t tableTokenIndex;
-};
-
-// DELETE 语句节点
-struct DeleteStatement : public ASTNode {
-    std::string tableName;
-    std::unique_ptr<ASTNode> whereClause;
-    size_t tableTokenIndex;
-};
-
-// UPDATE 语句节点
-struct UpdateStatement : public ASTNode {
-    std::string tableName;
-    std::map<std::string, std::string> assignments;
-    std::unique_ptr<ASTNode> whereClause;
-    size_t tableTokenIndex;
-};
-
-// WHERE 子句节点
-struct WhereClause : public ASTNode {
-    std::string condition;
-    size_t tokenIndex;
-};
-
-// Parser 类声明
 class Parser {
 public:
     Parser(const std::vector<Token>& tokens);
-
     std::unique_ptr<ASTNode> parse();
 
 private:
     const std::vector<Token>& tokens_;
-    size_t pos_;
-    
-    // 辅助方法
-    const Token& currentToken() const;
-    const Token& peekNextToken() const;
-    void advance();
-    void eat(const std::string& expectedValue);
-    void eat(TokenType expectedType);
+    size_t current_token_index_;
 
-    void reportError(const std::string& message, size_t position) const;
-    // 原始函数保留，以兼容其他调用
-    void reportError(const std::string& message) const;
-    
-    
-    // 语句解析函数 (对应顶级规则)
+    // 辅助函数
+    void advance();
+    void eat(const std::string& value);
+    void eat(TokenType type);
+    const Token& currentToken() const;
+    const Token& peekToken() const;
+    bool isAtEnd() const;
+
+    // 表达式解析器方法
+    std::unique_ptr<ASTNode> parseExpression();
+    std::unique_ptr<ASTNode> parseAndExpression();
+    std::unique_ptr<ASTNode> parseComparisonExpression();
+    std::unique_ptr<ASTNode> parseTerm();
+    std::unique_ptr<ASTNode> parseFactor();
+    std::unique_ptr<ASTNode> parsePrimary();
+
+    // 语句解析方法
     std::unique_ptr<ASTNode> parseSelectStatement();
     std::unique_ptr<ASTNode> parseCreateTableStatement();
     std::unique_ptr<ASTNode> parseInsertStatement();
     std::unique_ptr<ASTNode> parseDeleteStatement();
     std::unique_ptr<ASTNode> parseUpdateStatement();
-    
-     //处理 CREATE INDEX 语句的解析逻辑
     std::unique_ptr<ASTNode> parseCreateIndexStatement();
 
-    // 子句解析函数
+    // 子句解析方法
     std::vector<std::string> parseSelectList();
-    std::unique_ptr<WhereClause> parseOptionalWhere();
-    std::string parseCondition(size_t& tokenIndex);
+    std::unique_ptr<JoinClause> parseOptionalJoin();
+    std::unique_ptr<ASTNode> parseOptionalWhere();
     std::vector<ColumnDefinition> parseColumnDefinitionList();
     ColumnDefinition parseColumnDefinition();
-    std::string parseDataType();
-    std::vector<std::string> parseColumnConstraints();
-    std::vector<std::string> parseValueList();
+    std::vector<std::string> parseInsertValues();
     std::map<std::string, std::string> parseSetClause();
 };
 

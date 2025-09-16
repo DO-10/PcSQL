@@ -24,7 +24,8 @@ std::unique_ptr<PlanNode> ExecutionPlanGenerator::generate(const std::vector<Qua
                 size_t length = (q.result != "NULL" && !q.result.empty()) ? std::stoul(q.result) : 0;
                 
                 // 直接使用列表初始化
-                columns.push_back({name, type, length, {}}); 
+                // columns.push_back({name, type, length, {}}); 
+                //cols.emplace_back(colDef.name, colDef.type, std::vector<std::string>{}); // 传递一个空的 vector
             }
         }
         return std::make_unique<CreateTablePlanNode>(firstQuad.arg1, columns);

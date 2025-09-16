@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <utility> // For std::move
 #include "compiler/parser.h"
 
 // 四元式结构
@@ -12,6 +13,10 @@ struct Quadruplet {
     std::string arg1;
     std::string arg2;
     std::string result;
+
+    // [FIX] 添加一个构造函数，解决 emplace_back 的问题
+    Quadruplet(std::string o, std::string a1, std::string a2, std::string res)
+        : op(std::move(o)), arg1(std::move(a1)), arg2(std::move(a2)), result(std::move(res)) {}
 };
 
 // IR 生成器类
@@ -30,8 +35,6 @@ private:
     void visit(InsertStatement* node);
     void visit(DeleteStatement* node);
     void visit(UpdateStatement* node);
-
-    // 新增：访问 CREATE INDEX 语句
     void visit(CreateIndexStatement* node);
     
     // 辅助函数
