@@ -36,10 +36,6 @@ target_include_directories(pcsql_storage PUBLIC
   ${PROJECT_SOURCE_DIR}/include
 )
 
-# Demo executable
-add_executable(storage_demo ${PROJECT_SOURCE_DIR}/src/main.cpp)
-target_link_libraries(storage_demo pcsql_storage)
-
 # Test executables
 add_executable(storage_basic_tests ${PROJECT_SOURCE_DIR}/src/tests/basic_tests.cpp)
 add_executable(storage_stress_tests ${PROJECT_SOURCE_DIR}/src/tests/stress_tests.cpp)
@@ -64,3 +60,8 @@ add_executable(pcsqld
 target_include_directories(pcsqld PRIVATE include)
 
 target_link_libraries(pcsqld PRIVATE pcsql_storage)
+
+# 在 Windows 平台下，链接 Winsock 库
+if(MSVC)
+    target_link_libraries(pcsqld PRIVATE ws2_32)
+endif()
