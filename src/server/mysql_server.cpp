@@ -1,7 +1,31 @@
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
+// #include <arpa/inet.h>
+// #include <netinet/in.h>
+// #include <sys/socket.h>
+#include "storage/storage_engine.hpp"
+#include "execution/execution_engine.h"
+#include "compiler/compiler.h"
+
+// 2. 然后再包含系统头文件
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+
+#ifdef _WIN32
+    #include <Winsock2.h>
+    #include <Ws2tcpip.h>
+#else
+    #include <arpa/inet.h>
+    #include <netinet/in.h>
+    #include <sys/socket.h>
+#endif
+// ... (其余头文件保持不变) ...
+#ifdef _WIN32
+    // Windows 平台
+    // unistd.h 相关的函数在 Windows 下没有直接的头文件，
+    // 但 closesocket() 在 Winsock2.h 中
+#else
+    // Linux/Unix 平台
+    #include <unistd.h>
+#endif
 #include <cstring>
 #include <string>
 #include <vector>
@@ -12,13 +36,17 @@
 #include <signal.h>
 #include <atomic>
 #include <errno.h>
-#include <sys/select.h>
 
-#include "storage/storage_engine.hpp"
-#include "execution/execution_engine.h"
-#include "compiler/compiler.h"
+#ifdef _WIN32
+    // Windows 平台
+    #include <Winsock2.h>
+#else
+    // Linux/Unix 平台
+    #include <sys/select.h>
+#endif
 
 using namespace pcsql;
+
 
 namespace {
 // -------- Utils --------
@@ -82,12 +110,30 @@ static std::string normalize_sql(const std::string& in){
 static bool write_packet(int fd, uint8_t& seq, const std::vector<uint8_t>& payload){
     uint32_t len = (uint32_t)payload.size();
     uint8_t hdr[4] = { (uint8_t)(len & 0xFF), (uint8_t)((len>>8)&0xFF), (uint8_t)((len>>16)&0xFF), seq++ };
+    #ifdef _WIN32
+    if (send(fd, (const char*)hdr, 4, 0) != 4) return false;
+    if (len > 0 && send(fd, (const char*)payload.data(), (int)len, 0) != (int)len) return false;
+#else
     if (send(fd, hdr, 4, 0) != 4) return false;
-    if (len>0 && send(fd, payload.data(), len, 0) != (ssize_t)len) return false;
+    if (len > 0 && send(fd, payload.data(), len, 0) != (ssize_t)len) return false;
+#endif
     return true;
 }
 
-static bool read_fully(int fd, void* buf, size_t n){ char* p=(char*)buf; size_t r=0; while(r<n){ ssize_t k=recv(fd,p+r,n-r,0); if(k<=0) return false; r+=k; } return true; }
+static bool read_fully(int fd, void* buf, size_t n){
+    char* p=(char*)buf;
+    size_t r=0;
+    while(r<n){
+#ifdef _WIN32
+        int k = recv(fd, p + r, (int)(n - r), 0);
+#else
+        ssize_t k = recv(fd,p+r,n-r,0);
+#endif
+        if(k<=0) return false;
+        r += k;
+    }
+    return true;
+}
 
 static bool read_packet(int fd, uint8_t& seq, std::vector<uint8_t>& out){
     uint8_t hdr[4];
@@ -148,11 +194,29 @@ public:
         : storage_("./storage_data", 64, Policy::LRU, true), exec_(storage_) {}
 
     int run(uint16_t port = 3307){
+        
+        #ifdef _WIN32
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "WSAStartup failed." << std::endl;
+        return 1;
+    }
+#endif
+
         int srv = socket(AF_INET, SOCK_STREAM, 0); if(srv<0){ perror("socket"); return 1; }
-        int opt=1; setsockopt(srv,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
+        // int opt=1; setsockopt(srv,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
+        int opt = 1;
+
+#ifdef _WIN32
+    // Windows 平台
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+#else
+    // Linux/Unix 平台
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
         sockaddr_in addr{}; addr.sin_family=AF_INET; addr.sin_addr.s_addr=INADDR_ANY; addr.sin_port=htons(port);
-        if(bind(srv,(sockaddr*)&addr,sizeof(addr))<0){ perror("bind"); close(srv); return 1; }
-        if(listen(srv, 16)<0){ perror("listen"); close(srv); return 1; }
+        if(bind(srv,(sockaddr*)&addr,sizeof(addr))<0){ perror("bind"); closesocket(srv); return 1; }
+        if(listen(srv, 16)<0){ perror("listen"); closesocket(srv); return 1; }
         std::cout << "PcSQL MySQL-compatible server listening on 0.0.0.0:" << port << std::endl;
         // accept loop with graceful shutdown on g_stop
         while(!g_stop.load()){
@@ -171,9 +235,9 @@ public:
                 perror("accept"); continue;
             }
             handle_client(fd);
-            close(fd);
+            closesocket(fd);
         }
-        close(srv);
+        closesocket(srv);
         std::cout << "PcSQL server shutting down (SIGINT/SIGTERM)" << std::endl;
         return 0;
     }
@@ -199,7 +263,6 @@ private:
         caps |= 0x00080000; // CLIENT_PLUGIN_AUTH
         put_int2(p, (uint16_t)(caps & 0xFFFF));
         p.push_back(45); // character set id (utf8mb4_general_ci)
-        put_int2(p, 0x0002); // status AUTOCOMMIT
         put_int2(p, (uint16_t)((caps >> 16) & 0xFFFF)); // capability flags upper 2 bytes
         p.push_back(21); // auth plugin data len (20 bytes scramble + 1 terminator)
         for(int i=0;i<10;++i) p.push_back(0x00); // reserved 10 bytes
