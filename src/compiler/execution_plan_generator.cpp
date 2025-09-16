@@ -79,6 +79,9 @@ std::unique_ptr<PlanNode> ExecutionPlanGenerator::generate(const std::vector<Qua
             }
         }
         return std::make_unique<DeletePlanNode>(firstQuad.arg1, whereCondition);
+    } else if (firstQuad.op == "DROP_TABLE") {
+        bool if_exists = (firstQuad.result == "1");
+        return std::make_unique<DropTablePlanNode>(firstQuad.arg1, if_exists);
     }
 
     throw std::runtime_error("Execution Plan Generation Error: Unsupported IR operation '" + firstQuad.op + "'.");

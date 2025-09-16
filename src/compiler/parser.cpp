@@ -83,6 +83,13 @@ namespace {
             std::cout << indent(level+1) << "condition: " << where->condition << std::endl;
             return;
         }
+        // Added: DropTableStatement debug print
+        if (auto drop = dynamic_cast<const DropTableStatement*>(node)) {
+            std::cout << indent(level) << "DropTableStatement" << std::endl;
+            std::cout << indent(level+1) << "table: " << drop->tableName << std::endl;
+            std::cout << indent(level+1) << "ifExists: " << (drop->ifExists ? "true" : "false") << std::endl;
+            return;
+        }
         std::cout << indent(level) << "<Unknown ASTNode type>" << std::endl;
     }
 }
@@ -191,6 +198,12 @@ std::unique_ptr<ASTNode> Parser::parse() {
             ast = parseCreateIndexStatement();
         } else {
             reportError("Unsupported CREATE statement type");
+        }
+    } else if (currentToken().value == "DROP") {
+        if (peekNextToken().value == "TABLE") {
+            ast = parseDropTableStatement();
+        } else {
+            reportError("Unsupported DROP statement type");
         }
     } else {
         reportError("Unsupported SQL statement");
@@ -572,4 +585,28 @@ std::unique_ptr<ASTNode> Parser::parseCreateIndexStatement() {
     eat(";");
 
     return std::make_unique<CreateIndexStatement>(indexName, tableName, columnName);
+}
+// 在文件末尾附近添加 DROP TABLE 解析实现（与其它语句实现相邻）
+std::unique_ptr<ASTNode> Parser::parseDropTableStatement() {
+    std::cout << "Parsing DROP TABLE statement..." << std::endl;
+    auto node = std::make_unique<DropTableStatement>();
+
+    eat("DROP");
+    eat("TABLE");
+
+    // 可选的 IF EXISTS
+    if (currentToken().value == "IF" && peekNextToken().value == "EXISTS") {
+        eat("IF");
+        eat("EXISTS");
+        node->ifExists = true;
+    }
+
+    node->tableTokenIndex = pos_;
+    node->tableName = currentToken().value;
+    eat(TokenType::IDENTIFIER);
+
+    // 结束分号
+    eat(";");
+
+    return node;
 }

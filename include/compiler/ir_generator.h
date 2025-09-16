@@ -30,6 +30,7 @@ private:
     void visit(InsertStatement* node);
     void visit(DeleteStatement* node);
     void visit(UpdateStatement* node);
+    void visit(DropTableStatement* node);
 
     // 新增：访问 CREATE INDEX 语句
     void visit(CreateIndexStatement* node);

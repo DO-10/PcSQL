@@ -19,6 +19,8 @@ std::vector<Quadruplet> IRGenerator::generate(const std::unique_ptr<ASTNode>& as
         visit(deleteStmt);
     } else if (auto updateStmt = dynamic_cast<UpdateStatement*>(ast.get())) {
         visit(updateStmt);
+    } else if (auto dropTableStmt = dynamic_cast<DropTableStatement*>(ast.get())) {
+        visit(dropTableStmt);
     }
     
     return quadruplets_;
@@ -104,4 +106,9 @@ void IRGenerator::visit(UpdateStatement* node) {
 void IRGenerator::visit(CreateIndexStatement* node) {
     std::cout << "Generating IR for CREATE INDEX statement..." << std::endl;
     quadruplets_.push_back({"CREATE_INDEX", node->indexName, node->tableName, node->columnName});
+}
+
+void IRGenerator::visit(DropTableStatement* node) {
+    // 为 DROP TABLE 生成简洁 IR：第一项操作符为 DROP_TABLE，arg1=表名，result=IF EXISTS 标志
+    quadruplets_.push_back({"DROP_TABLE", node->tableName, "NULL", node->ifExists ? "1" : "0"});
 }

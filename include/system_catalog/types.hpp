@@ -34,6 +34,7 @@ struct ColumnMetadata {
     std::string name;
     DataType type;
     std::vector<std::string> constraints;
+    std::size_t length = 0; // 新增：VARCHAR/CHAR 长度（0 表示未指定）
 };
 
 // Table schema

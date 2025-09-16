@@ -14,7 +14,9 @@ const std::unordered_set<std::string> Lexer::keywords_ = {
     "UNIQUE", "INDEX", "CHECK", "DEFAULT", "NULL", "IS",
     // 新增：将数据类型/常量/属性作为关键字，避免被识别为标识符
     "INT", "DOUBLE", "VARCHAR", "CHAR",
-    "TIMESTAMP", "AUTO_INCREMENT", "CURRENT_TIMESTAMP"
+    "TIMESTAMP", "AUTO_INCREMENT", "CURRENT_TIMESTAMP",
+    // 新增：DROP / IF / EXISTS 支持
+    "DROP", "IF", "EXISTS"
 };
 
 // 2. 构造函数
@@ -230,25 +232,20 @@ Token Lexer::getString() {
                 ss << "Unterminated escape sequence at line " << start_line << ", column " << start_column;
                 throw std::runtime_error(ss.str());
             }
-            // 处理常见转义序列
-            switch (currentChar()) {
-                case 'n': result += '\n'; break;
-                case 't': result += '\t'; break;
-                case 'r': result += '\r'; break;
-                case '\'': result += '\''; break;
-                case '\\': result += '\\'; break;
-                default:
-                    std::stringstream ss;
-                    ss << "Invalid escape sequence: \\" << currentChar() << " at line " << current_line_ << ", column " << current_column_;
-                    throw std::runtime_error(ss.str());
+            char esc = currentChar();
+            switch (esc) {
+                case '\\': result.push_back('\\'); break;
+                case '\'': result.push_back('\''); break;
+                case 'n': result.push_back('\n'); break;
+                case 't': result.push_back('\t'); break;
+                default: result.push_back(esc); break;
             }
             advance();
         } else {
-            result += currentChar();
+            result.push_back(currentChar());
             advance();
         }
     }
-    
     if (pos_ >= text_.length()) {
         std::stringstream ss;
         ss << "Unterminated string literal at line " << start_line << ", column " << start_column;

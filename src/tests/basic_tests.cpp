@@ -5,6 +5,8 @@
 #include <vector>
 
 #include "storage/storage_engine.hpp"
+#include "compiler/compiler.h"
+#include "execution/execution_engine.h"
 
 using namespace pcsql;
 
@@ -64,6 +66,30 @@ int main() {
         eng.get_page(pA); eng.unpin_page(pA, false);
         const auto& st = eng.stats();
         assert(st.misses >= 3);
+        eng.flush_all();
+    }
+
+    // 4) SQL 集成：通过 Compiler+ExecutionEngine 执行 DROP TABLE
+    {
+        StorageEngine eng(base, 2, Policy::LRU, false);
+        // 先用存储层创建一张表，供 SQL DROP 测试
+        eng.create_table("sqlt");
+        assert(eng.get_table_id("sqlt") >= 0);
+
+        Compiler comp;
+        ExecutionEngine exec(eng);
+
+        // 普通 DROP TABLE，应成功删除
+        auto unit1 = comp.compile("DROP TABLE sqlt;", eng);
+        std::string out1 = exec.execute(unit1);
+        assert(out1.find("DROP TABLE OK") != std::string::npos);
+        assert(eng.get_table_id("sqlt") < 0);
+
+        // IF EXISTS 版本：表已不存在，应跳过且不报错
+        auto unit2 = comp.compile("DROP TABLE IF EXISTS sqlt;", eng);
+        std::string out2 = exec.execute(unit2);
+        // 输出可能是 skipped 文案
+        assert(out2.find("skipped") != std::string::npos);
         eng.flush_all();
     }
 

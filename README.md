@@ -1,3 +1,19 @@
+# PcSQL
+
+数据库采用C/S架构，基于Linux操作系统
+
+## 服务端构建
+使用 CMake
+```bash
+cmake -S . -B build
+cmake --build build -j
+./build/pcsqld
+```
+## 服务端开发环境运行
+```bash
+./build/pcsqld
+```
+
 # PcSQL Storage Engine (C++)
 
 一个极简教学用页式存储引擎，纯 C++ 实现，包含：磁盘页管理（DiskManager）、缓冲池（BufferManager，支持 LRU/FIFO）、表管理（TableManager，表到页集合映射）、以及统一封装（StorageEngine）。内置演示程序 main.cpp。

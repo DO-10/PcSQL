@@ -49,6 +49,8 @@ void SemanticAnalyzer::analyze(const std::unique_ptr<ASTNode>& ast, const std::v
             visit(updateStmt, tokens);
         } else if (auto createIndexStmt = dynamic_cast<CreateIndexStatement*>(ast.get())) {
             visit(createIndexStmt, tokens);
+        } else if (auto dropTableStmt = dynamic_cast<DropTableStatement*>(ast.get())) {
+            visit(dropTableStmt, tokens);
         } else {
             throw std::runtime_error("Semantic analysis error: Unsupported AST node type.");
         }
@@ -151,6 +153,18 @@ void SemanticAnalyzer::visit(UpdateStatement* node, const std::vector<Token>& to
     checkWhereClause(dynamic_cast<WhereClause*>(node->whereClause.get()), node->tableName, tokens);
     // 完整性约束（基础版）：禁止将 NOT NULL/PRIMARY 列更新为 NULL；对 UNIQUE/PRIMARY 做基本重复值检查
     checkConstraintsOnUpdate(node, schema, tokens);
+}
+
+// 新增：DROP TABLE 语义分析
+void SemanticAnalyzer::visit(DropTableStatement* node, const std::vector<Token>& tokens) {
+    // IF EXISTS: 如果表不存在则不报错
+    if (!tableExists(node->tableName)) {
+        if (node->ifExists) {
+            std::cout << "[Semantic Analyzer] DROP TABLE: table '" << node->tableName << "' does not exist; IF EXISTS suppresses error." << std::endl;
+            return;
+        }
+        reportError("Table '" + node->tableName + "' does not exist.", node->tableTokenIndex, tokens);
+    }
 }
 
 void SemanticAnalyzer::checkValueType(const std::string& value, DataType expectedType) {

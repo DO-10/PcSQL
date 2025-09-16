@@ -21,6 +21,8 @@ public:
     void visit(UpdateStatement* node, const std::vector<Token>& tokens);
 
     void visit(CreateIndexStatement* node, const std::vector<Token>& tokens);
+    // 新增：DROP TABLE 语义分析
+    void visit(DropTableStatement* node, const std::vector<Token>& tokens);
 
 private:
     void reportError(const std::string& message, size_t tokenIndex, const std::vector<Token>& tokens);

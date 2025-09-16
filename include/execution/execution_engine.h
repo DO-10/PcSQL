@@ -27,9 +27,12 @@ private:
     // 语句分派
     std::string handleSelect(SelectStatement* stmt);
     std::string handleCreate(CreateTableStatement* stmt);
+    std::string handleCreateIndex(CreateIndexStatement* stmt);
     std::string handleInsert(InsertStatement* stmt);
     std::string handleDelete(DeleteStatement* stmt);
     std::string handleUpdate(UpdateStatement* stmt);
+    // 新增：DROP TABLE
+    std::string handleDropTable(DropTableStatement* stmt);
 
     // 便捷：把表按行扫描转为二维文本
     static std::string format_rows(const std::vector<std::pair<pcsql::RID, std::string>>& rows);

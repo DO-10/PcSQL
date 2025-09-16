@@ -16,6 +16,7 @@ struct PlanNode {
         SELECT,
         UPDATE,
         DELETE,
+        DROP_TABLE,
     };
 
     PlanNodeType type;
@@ -83,6 +84,16 @@ struct DeletePlanNode : public PlanNode {
     DeletePlanNode(const std::string& table, const std::string& where)
         : tableName(table), whereCondition(where) {
         type = PlanNodeType::DELETE;
+    }
+};
+
+// DROP TABLE 语句的执行计划节点
+struct DropTablePlanNode : public PlanNode {
+    std::string tableName;
+    bool ifExists;
+    DropTablePlanNode(const std::string& table, bool if_exists)
+        : tableName(table), ifExists(if_exists) {
+        type = PlanNodeType::DROP_TABLE;
     }
 };
 

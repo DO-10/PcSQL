@@ -73,6 +73,13 @@ struct UpdateStatement : public ASTNode {
     size_t tableTokenIndex;
 };
 
+// DROP TABLE 语句节点
+struct DropTableStatement : public ASTNode {
+    std::string tableName;
+    bool ifExists{false};
+    size_t tableTokenIndex;
+};
+
 // WHERE 子句节点
 struct WhereClause : public ASTNode {
     std::string condition;
@@ -111,6 +118,9 @@ private:
     
      //处理 CREATE INDEX 语句的解析逻辑
     std::unique_ptr<ASTNode> parseCreateIndexStatement();
+
+    // 新增：处理 DROP TABLE 语句
+    std::unique_ptr<ASTNode> parseDropTableStatement();
 
     // 子句解析函数
     std::vector<std::string> parseSelectList();
