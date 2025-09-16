@@ -24,4 +24,20 @@ Compiler::CompiledUnit Compiler::compile(const std::string& sql, pcsql::StorageE
     unit.ast = std::move(ast);
     unit.ir = std::move(ir);
     return unit;
+
+    // 5) 执行计划生成
+    std::string Compiler::getPlanAsTree(const std::string& sql, pcsql::StorageEngine& storage) {
+        auto unit = compile(sql, storage);
+        return PlanSerializer::toString(unit.plan.get());
+    }
+
+    std::string Compiler::getPlanAsJSON(const std::string& sql, pcsql::StorageEngine& storage) {
+        auto unit = compile(sql, storage);
+        return PlanSerializer::toJSON(unit.plan.get());
+    }
+
+    std::string Compiler::getPlanAsSExpression(const std::string& sql, pcsql::StorageEngine& storage) {
+        auto unit = compile(sql, storage);
+        return PlanSerializer::toSExpression(unit.plan.get());
+    }
 }
