@@ -1,83 +1,380 @@
-#include "execution_plan/plan_generator.h"
-#include <iostream>
+#include <compiler/execution_plan/plan_printer.h>
+#include <sstream>
+#include <iomanip>
+#include <cctype>
 
-std::unique_ptr<PlanNode> PlanGenerator::generate(const std::unique_ptr<ASTNode>& ast) {
-    if (!ast) {
-        throw std::runtime_error("AST is null");
+std::string PlanPrinter::getPlanAsTree(const std::shared_ptr<PlanNode>& root) {
+    std::string result;
+    treeHelper(root, result, 0);
+    return result;
+}
+
+std::string PlanPrinter::getPlanAsJSON(const std::shared_ptr<PlanNode>& root) {
+    std::string result = "{";
+    jsonHelper(root, result);
+    result += "\n}";
+    return result;
+}
+
+std::string PlanPrinter::getPlanAsSExpression(const std::shared_ptr<PlanNode>& root) {
+    std::string result;
+    sexprHelper(root, result);
+    return result;
+}
+
+void PlanPrinter::treeHelper(const std::shared_ptr<PlanNode>& node, std::string& result, int depth) {
+    if (!node) return;
+    
+    // 添加缩进
+    result += std::string(depth * 2, ' ');
+    
+    // 根据节点类型添加描述
+    switch (node->getType()) {
+        case PlanNode::NodeType::CreateTable:
+            result += "CreateTable";
+            break;
+        case PlanNode::NodeType::CreateIndex:
+            result += "CreateIndex";
+            break;
+        case PlanNode::NodeType::Insert:
+            result += "Insert";
+            break;
+        case PlanNode::NodeType::SeqScan:
+            result += "SeqScan";
+            break;
+        case PlanNode::NodeType::Filter:
+            result += "Filter";
+            break;
+        case PlanNode::NodeType::Project:
+            result += "Project";
+            break;
+        case PlanNode::NodeType::Delete:
+            result += "Delete";
+            break;
+        case PlanNode::NodeType::Update:
+            result += "Update";
+            break;
+        case PlanNode::NodeType::DropTable:
+            result += "DropTable";
+            break;
     }
     
-    if (auto select = dynamic_cast<SelectStatement*>(ast.get())) {
-        return visit(select);
-    } else if (auto createTable = dynamic_cast<CreateTableStatement*>(ast.get())) {
-        return visit(createTable);
-    } else if (auto insert = dynamic_cast<InsertStatement*>(ast.get())) {
-        return visit(insert);
-    } else if (auto del = dynamic_cast<DeleteStatement*>(ast.get())) {
-        return visit(del);
-    } else if (auto update = dynamic_cast<UpdateStatement*>(ast.get())) {
-        return visit(update);
-    } else if (auto createIndex = dynamic_cast<CreateIndexStatement*>(ast.get())) {
-        return visit(createIndex);
+    // 添加节点特定信息
+    switch (node->getType()) {
+        case PlanNode::NodeType::CreateTable: {
+            auto n = std::static_pointer_cast<CreateTableNode>(node);
+            result += " (table=" + n->getTableName() + ")";
+            break;
+        }
+        case PlanNode::NodeType::CreateIndex: {
+            auto n = std::static_pointer_cast<CreateIndexNode>(node);
+            result += " (index=" + n->getIndexName() + " on " + 
+                      n->getTableName() + "." + n->getColumnName() + ")";
+            break;
+        }
+        case PlanNode::NodeType::Insert: {
+            auto n = std::static_pointer_cast<InsertNode>(node);
+            result += " (table=" + n->getTableName() + ")";
+            break;
+        }
+        case PlanNode::NodeType::SeqScan: {
+            auto n = std::static_pointer_cast<SeqScanNode>(node);
+            result += " (table=" + n->getTableName() + ")";
+            break;
+        }
+        case PlanNode::NodeType::Filter: {
+            auto n = std::static_pointer_cast<FilterNode>(node);
+            result += " (condition=" + n->getCondition() + ")";
+            break;
+        }
+        case PlanNode::NodeType::Project: {
+            auto n = std::static_pointer_cast<ProjectNode>(node);
+            std::string columns;
+            for (const auto& col : n->getColumns()) {
+                if (!columns.empty()) columns += ", ";
+                columns += col;
+            }
+            result += " (columns=" + columns + ")";
+            break;
+        }
+        case PlanNode::NodeType::Delete: {
+            auto n = std::static_pointer_cast<DeleteNode>(node);
+            result += " (table=" + n->getTableName() + ")";
+            break;
+        }
+        case PlanNode::NodeType::Update: {
+            auto n = std::static_pointer_cast<UpdateNode>(node);
+            result += " (table=" + n->getTableName() + ")";
+            break;
+        }
+        case PlanNode::NodeType::DropTable: {
+            auto n = std::static_pointer_cast<DropTableNode>(node);
+            result += " (table=" + n->getTableName() + ")";
+            break;
+        }
     }
     
-    throw std::runtime_error("Unsupported AST node type");
+    result += "\n";
+    
+    // 递归处理子节点
+    for (const auto& child : node->getChildren()) {
+        treeHelper(child, result, depth + 1);
+    }
 }
 
-std::unique_ptr<PlanNode> PlanGenerator::visit(const SelectStatement* node) {
-    // 创建扫描节点
-    auto scan = std::make_unique<SeqScanNode>(node->fromTable);
+void PlanPrinter::jsonHelper(const std::shared_ptr<PlanNode>& node, std::string& result) {
+    if (!node) return;
     
-    // 添加过滤节点（如果有WHERE子句）
-    std::unique_ptr<PlanNode> topNode = std::move(scan);
-    if (node->whereClause) {
-        topNode = std::make_unique<FilterNode>(node->whereClause->condition, std::move(topNode));
+    result += "\n  \"node\": {";
+    result += "\n    \"type\": \"";
+    
+    switch (node->getType()) {
+        case PlanNode::NodeType::CreateTable: 
+            result += "CreateTable\",";
+            break;
+        case PlanNode::NodeType::CreateIndex: 
+            result += "CreateIndex\",";
+            break;
+        case PlanNode::NodeType::Insert: 
+            result += "Insert\",";
+            break;
+        case PlanNode::NodeType::SeqScan: 
+            result += "SeqScan\",";
+            break;
+        case PlanNode::NodeType::Filter: 
+            result += "Filter\",";
+            break;
+        case PlanNode::NodeType::Project: 
+            result += "Project\",";
+            break;
+        case PlanNode::NodeType::Delete: 
+            result += "Delete\",";
+            break;
+        case PlanNode::NodeType::Update: 
+            result += "Update\",";
+            break;
+        case PlanNode::NodeType::DropTable: 
+            result += "DropTable\",";
+            break;
     }
     
-    // 添加投影节点
-    return std::make_unique<ProjectNode>(node->columns, node->selectAll, std::move(topNode));
-}
-
-std::unique_ptr<PlanNode> PlanGenerator::visit(const CreateTableStatement* node) {
-    std::vector<std::tuple<std::string, std::string, size_t>> columns;
-    for (const auto& col : node->columns) {
-        columns.emplace_back(col.name, col.type, col.length);
+    // 添加节点特定信息
+    switch (node->getType()) {
+        case PlanNode::NodeType::CreateTable: {
+            auto n = std::static_pointer_cast<CreateTableNode>(node);
+            result += "\n    \"table\": \"" + escapeJSON(n->getTableName()) + "\"";
+            break;
+        }
+        case PlanNode::NodeType::CreateIndex: {
+            auto n = std::static_pointer_cast<CreateIndexNode>(node);
+            result += "\n    \"index\": \"" + escapeJSON(n->getIndexName()) + "\",";
+            result += "\n    \"table\": \"" + escapeJSON(n->getTableName()) + "\",";
+            result += "\n    \"column\": \"" + escapeJSON(n->getColumnName()) + "\"";
+            break;
+        }
+        case PlanNode::NodeType::Insert: {
+            auto n = std::static_pointer_cast<InsertNode>(node);
+            result += "\n    \"table\": \"" + escapeJSON(n->getTableName()) + "\"";
+            break;
+        }
+        case PlanNode::NodeType::SeqScan: {
+            auto n = std::static_pointer_cast<SeqScanNode>(node);
+            result += "\n    \"table\": \"" + escapeJSON(n->getTableName()) + "\",";
+            result += "\n    \"filter\": \"" + escapeJSON(n->getFilterCondition()) + "\"";
+            break;
+        }
+        case PlanNode::NodeType::Filter: {
+            auto n = std::static_pointer_cast<FilterNode>(node);
+            result += "\n    \"condition\": \"" + escapeJSON(n->getCondition()) + "\"";
+            break;
+        }
+        case PlanNode::NodeType::Project: {
+            auto n = std::static_pointer_cast<ProjectNode>(node);
+            result += "\n    \"columns\": [";
+            bool first = true;
+            for (const auto& col : n->getColumns()) {
+                if (!first) result += ",";
+                result += "\n      \"" + escapeJSON(col) + "\"";
+                first = false;
+            }
+            result += "\n    ]";
+            break;
+        }
+        case PlanNode::NodeType::Delete: {
+            auto n = std::static_pointer_cast<DeleteNode>(node);
+            result += "\n    \"table\": \"" + escapeJSON(n->getTableName()) + "\",";
+            result += "\n    \"condition\": \"" + escapeJSON(n->getCondition()) + "\"";
+            break;
+        }
+        case PlanNode::NodeType::Update: {
+            auto n = std::static_pointer_cast<UpdateNode>(node);
+            result += "\n    \"table\": \"" + escapeJSON(n->getTableName()) + "\",";
+            result += "\n    \"assignments\": {";
+            bool first = true;
+            for (const auto& [col, val] : n->getAssignments()) {
+                if (!first) result += ",";
+                result += "\n      \"" + escapeJSON(col) + "\": \"" + escapeJSON(val) + "\"";
+                first = false;
+            }
+            result += "\n    },";
+            result += "\n    \"condition\": \"" + escapeJSON(n->getCondition()) + "\"";
+            break;
+        }
+        case PlanNode::NodeType::DropTable: {
+            auto n = std::static_pointer_cast<DropTableNode>(node);
+            result += "\n    \"table\": \"" + escapeJSON(n->getTableName()) + "\",";
+            result += "\n    \"ifExists\": " + std::string(n->ifExists() ? "true" : "false");
+            break;
+        }
     }
-    return std::make_unique<CreateTableNode>(node->tableName, columns);
-}
-
-std::unique_ptr<PlanNode> PlanGenerator::visit(const InsertStatement* node) {
-    return std::make_unique<InsertNode>(node->tableName, node->values);
-}
-
-std::unique_ptr<PlanNode> PlanGenerator::visit(const DeleteStatement* node) {
-    // 创建扫描节点
-    auto scan = std::make_unique<SeqScanNode>(node->tableName);
     
-    // 添加过滤节点（如果有WHERE子句）
-    std::unique_ptr<PlanNode> topNode = std::move(scan);
-    if (node->whereClause) {
-        topNode = std::make_unique<FilterNode>(node->whereClause->condition, std::move(topNode));
+    // 处理子节点
+    if (!node->getChildren().empty()) {
+        result += ",\n    \"children\": [";
+        bool firstChild = true;
+        for (const auto& child : node->getChildren()) {
+            if (!firstChild) result += ",";
+            jsonHelper(child, result);
+            firstChild = false;
+        }
+        result += "\n    ]";
     }
     
-    // 添加删除节点
-    return std::make_unique<DeleteNode>(node->tableName, std::move(topNode));
+    result += "\n  }";
 }
 
-std::unique_ptr<PlanNode> PlanGenerator::visit(const UpdateStatement* node) {
-    // 创建扫描节点
-    auto scan = std::make_unique<SeqScanNode>(node->tableName);
+void PlanPrinter::sexprHelper(const std::shared_ptr<PlanNode>& node, std::string& result) {
+    if (!node) return;
     
-    // 添加过滤节点（如果有WHERE子句）
-    std::unique_ptr<PlanNode> topNode = std::move(scan);
-    if (node->whereClause) {
-        topNode = std::make_unique<FilterNode>(node->whereClause->condition, std::move(topNode));
+    result += "(";
+    
+    switch (node->getType()) {
+        case PlanNode::NodeType::CreateTable: 
+            result += "CreateTable";
+            break;
+        case PlanNode::NodeType::CreateIndex: 
+            result += "CreateIndex";
+            break;
+        case PlanNode::NodeType::Insert: 
+            result += "Insert";
+            break;
+        case PlanNode::NodeType::SeqScan: 
+            result += "SeqScan";
+            break;
+        case PlanNode::NodeType::Filter: 
+            result += "Filter";
+            break;
+        case PlanNode::NodeType::Project: 
+            result += "Project";
+            break;
+        case PlanNode::NodeType::Delete: 
+            result += "Delete";
+            break;
+        case PlanNode::NodeType::Update: 
+            result += "Update";
+            break;
+        case PlanNode::NodeType::DropTable: 
+            result += "DropTable";
+            break;
     }
     
-    // 添加更新节点
-    return std::make_unique<UpdateNode>(node->tableName, node->assignments, std::move(topNode));
+    // 添加节点特定信息
+    switch (node->getType()) {
+        case PlanNode::NodeType::CreateTable: {
+            auto n = std::static_pointer_cast<CreateTableNode>(node);
+            result += " :table \"" + n->getTableName() + "\"";
+            break;
+        }
+        case PlanNode::NodeType::CreateIndex: {
+            auto n = std::static_pointer_cast<CreateIndexNode>(node);
+            result += " :index \"" + n->getIndexName() + "\"";
+            result += " :table \"" + n->getTableName() + "\"";
+            result += " :column \"" + n->getColumnName() + "\"";
+            break;
+        }
+        case PlanNode::NodeType::Insert: {
+            auto n = std::static_pointer_cast<InsertNode>(node);
+            result += " :table \"" + n->getTableName() + "\"";
+            break;
+        }
+        case PlanNode::NodeType::SeqScan: {
+            auto n = std::static_pointer_cast<SeqScanNode>(node);
+            result += " :table \"" + n->getTableName() + "\"";
+            if (!n->getFilterCondition().empty()) {
+                result += " :filter \"" + n->getFilterCondition() + "\"";
+            }
+            break;
+        }
+        case PlanNode::NodeType::Filter: {
+            auto n = std::static_pointer_cast<FilterNode>(node);
+            result += " :condition \"" + n->getCondition() + "\"";
+            break;
+        }
+        case PlanNode::NodeType::Project: {
+            auto n = std::static_pointer_cast<ProjectNode>(node);
+            result += " :columns (";
+            for (const auto& col : n->getColumns()) {
+                result += " \"" + col + "\"";
+            }
+            result += " )";
+            break;
+        }
+        case PlanNode::NodeType::Delete: {
+            auto n = std::static_pointer_cast<DeleteNode>(node);
+            result += " :table \"" + n->getTableName() + "\"";
+            if (!n->getCondition().empty()) {
+                result += " :condition \"" + n->getCondition() + "\"";
+            }
+            break;
+        }
+        case PlanNode::NodeType::Update: {
+            auto n = std::static_pointer_cast<UpdateNode>(node);
+            result += " :table \"" + n->getTableName() + "\"";
+            result += " :assignments (";
+            for (const auto& [col, val] : n->getAssignments()) {
+                result += " (\"" + col + "\" . \"" + val + "\")";
+            }
+            result += " )";
+            if (!n->getCondition().empty()) {
+                result += " :condition \"" + n->getCondition() + "\"";
+            }
+            break;
+        }
+        case PlanNode::NodeType::DropTable: {
+            auto n = std::static_pointer_cast<DropTableNode>(node);
+            result += " :table \"" + n->getTableName() + "\"";
+            result += " :ifExists " + std::string(n->ifExists() ? "true" : "false");
+            break;
+        }
+    }
+    
+    // 处理子节点
+    for (const auto& child : node->getChildren()) {
+        result += " ";
+        sexprHelper(child, result);
+    }
+    
+    result += ")";
 }
 
-std::unique_ptr<PlanNode> PlanGenerator::visit(const CreateIndexStatement* node) {
-    return std::make_unique<CreateIndexNode>(node->indexName, node->tableName, node->columnName);
+std::string PlanPrinter::escapeJSON(const std::string& input) {
+    std::ostringstream ss;
+    for (auto c : input) {
+        switch (c) {
+            case '"': ss << "\\\""; break;
+            case '\\': ss << "\\\\"; break;
+            case '\b': ss << "\\b"; break;
+            case '\f': ss << "\\f"; break;
+            case '\n': ss << "\\n"; break;
+            case '\r': ss << "\\r"; break;
+            case '\t': ss << "\\t"; break;
+            default:
+                if (c >= 0 && c <= 0x1F) {
+                    ss << "\\u" << std::hex << std::setw(4) << std::setfill('0') << (int)c;
+                } else {
+                    ss << c;
+                }
+        }
+    }
+    return ss.str();
 }
-
