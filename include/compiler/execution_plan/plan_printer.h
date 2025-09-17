@@ -1,16 +1,20 @@
 #pragma once
-#include "execution_plan/plan_node.h"
 #include <string>
+#include <memory>
+#include "plan_generator.h"
 
-class   {
+class PlanPrinter {
 public:
-    static std::string toString(const PlanNode* node);
-    static std::string toJSON(const PlanNode* node);
-    static std::string toSExpression(const PlanNode* node);
-    
+    static std::string getPlanAsTree(const std::shared_ptr<PlanNode>& root);
+    static std::string getPlanAsJSON(const std::shared_ptr<PlanNode>& root);
+    static std::string getPlanAsSExpression(const std::shared_ptr<PlanNode>& root);
+
 private:
-    static std::string indent(int level);
-    static void serializeToJSON(const PlanNode* node, json& j);
-    static void serializeToSExpression(const PlanNode* node, std::string& expr);
+    static void treeHelper(const std::shared_ptr<PlanNode>& node, std::string& result, int depth);
+    static void jsonHelper(const std::shared_ptr<PlanNode>& node, std::string& result);
+    static void sexprHelper(const std::shared_ptr<PlanNode>& node, std::string& result);
+    
+    static std::string escapeJSON(const std::string& input);
 };
+
 
